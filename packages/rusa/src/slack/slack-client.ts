@@ -292,7 +292,9 @@ export class SlackClient {
   /**
    * Share a file into a channel, or a thread when `threadTs` is given, through
    * Slack's external upload flow (`files.getUploadURLExternal`, upload, then
-   * `files.completeUploadExternal`), which the SDK's `uploadV2` drives.
+   * `files.completeUploadExternal`), which the SDK's `uploadV2` drives. Returns
+   * the file IDs Slack reports; the list is empty if Slack completed the share
+   * without naming a file.
    */
   async uploadFile(
     channel: string,
@@ -316,7 +318,6 @@ export class SlackClient {
     );
     const completions = (response as { files?: { files?: { id?: string }[] }[] }).files ?? [];
     const ids = completions.flatMap((c) => c.files ?? []).flatMap((f) => (f.id ? [f.id] : []));
-    if (ids.length === 0) throw new Error("Slack did not confirm the uploaded file");
     return ids;
   }
 

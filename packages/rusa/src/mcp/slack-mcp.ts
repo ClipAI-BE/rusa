@@ -27,6 +27,14 @@ export interface SlackMcpOptions {
   maxFileBytes?: number;
 }
 
+export interface SlackWriteMcpOptions extends SlackMcpOptions {
+  /**
+   * Called once Slack has accepted a write, so the run that made it is protected
+   * from coalescing abort and is not repeated by a replacement run.
+   */
+  onWrite?: () => void;
+}
+
 function requireWorkDir(options: SlackMcpOptions): string {
   if (!options.workDir) throw new Error("Slack file tools need an actor workdir");
   return options.workDir;
@@ -243,7 +251,7 @@ export function createSlackReadMcpServer(
 export function createSlackWriteMcpServer(
   client: SlackClient,
   allowedChannels: "all" | string[],
-  options: SlackMcpOptions = {}
+  options: SlackWriteMcpOptions = {}
 ): McpServer {
   const server = createMcpServer({ name: SLACK_WRITE_MCP_NAME, version: "0.1.0" });
   const allowed = (channel: string) =>
@@ -259,6 +267,7 @@ export function createSlackWriteMcpServer(
       try {
         if (!allowed(channel)) throw new Error(`access denied: Slack channel ${channel}`);
         const ts = await client.send(channel, text, threadTs);
+        options.onWrite?.();
         return toolOk({ ref: `slack:channels/${channel}/messages/${ts}`, ts });
       } catch (err) {
         return toolError(err);
@@ -280,6 +289,7 @@ export function createSlackWriteMcpServer(
       try {
         if (!allowed(channel)) throw new Error(`access denied: Slack channel ${channel}`);
         await client.react(channel, ts, emoji);
+        options.onWrite?.();
         return toolOk({ ok: true });
       } catch (err) {
         return toolError(err);
@@ -323,6 +333,13 @@ export function createSlackWriteMcpServer(
           ...(title ? { title } : {}),
           ...(initialComment ? { initialComment } : {}),
         });
+        // Slack completed the share, so the file is posted even if no ID came back.
+        options.onWrite?.();
+        if (fileIds.length === 0) {
+          throw new Error(
+            "Slack completed the upload but returned no file ID; check the channel before uploading again"
+          );
+        }
         return toolOk({ fileIds, channel, ...(threadTs ? { threadTs } : {}) });
       } catch (err) {
         return toolError(err);
