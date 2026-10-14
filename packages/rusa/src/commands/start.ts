@@ -244,6 +244,7 @@ import {
   resolveDiskAlertConfig,
 } from "../observability/disk-alert.js";
 import { resolveErrorSink } from "../observability/error-sink.js";
+import { configureGeminiUsage } from "../observability/gemini-usage.js";
 import {
   collectConfigSecretEntries,
   collectEnvSecretEntries,
@@ -321,7 +322,6 @@ import {
   slackInboxEvent,
   withReceiptReaction,
 } from "../slack/socket-source.js";
-import { createCommitmentPolarityEvaluator } from "../understanding/commitment-polarity.js";
 import {
   DistillerCursorStore,
   latestOpCreatedAt,
@@ -1091,6 +1091,7 @@ async function composeStart(
     secrets: readSecrets,
     context: { component: "start" },
   });
+  configureGeminiUsage(log, mcHome);
   // This file name is configuration, not a credential. Read the value only on
   // the host plane and register it with the log scrubber before any client can
   // use it. A bad/missing file intentionally leaves the opt-in observer
@@ -2277,7 +2278,6 @@ async function composeStart(
   const gmailClient = new GoogleGmailClient(config.chat?.gchatConfigDir);
   const calendarClients = new GoogleCalendarClientProvider(config.chat?.gchatConfigDir);
   const driveClients = new GoogleDriveClient(config.chat?.gchatConfigDir);
-  const commitmentPolarityEvaluator = createCommitmentPolarityEvaluator(config.geminiApiKey);
   // The one live attribution source: populated only for an actual provider
   // attempt (including fallbacks), and cleared by every terminal run hook.
   const activeRunSelections = new Map<string, RawProviderModelConfig>();
@@ -2427,10 +2427,6 @@ async function composeStart(
       store: distillerStore,
       reports: {
         paths: iuReportPaths(mcHome),
-        // ISSUE_NUM polarity check as a cheap semantic read . Unset key =>
-        // undefined => the report says the check did not run, which is the
-        // honest answer; it never degrades to a lexical guess.
-        ...(commitmentPolarityEvaluator ? { evaluateCommitment: commitmentPolarityEvaluator } : {}),
       },
       ...(chatClientForSpaces
         ? { listChatSpaces: () => listAllChatSpaces(chatClientForSpaces) }
