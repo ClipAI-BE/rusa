@@ -6,7 +6,9 @@ import type { InboxEntry } from "../repositories/inbox-repository.js";
 import {
   MAX_SLACK_FILE_BYTES,
   MAX_SLACK_HISTORY_PAGE,
+  SLACK_CONVERSATION_TYPES,
   type SlackClient,
+  type SlackConversationType,
   type SlackHistoryQuery,
 } from "../slack/slack-client.js";
 import { toolError, toolOk } from "./result.js";
@@ -164,6 +166,50 @@ export function createSlackReadMcpServer(
     async ({ channel }) => {
       try {
         return toolOk(await client.getChannel(channel));
+      } catch (err) {
+        return toolError(err);
+      }
+    }
+  );
+  server.registerTool(
+    "list_conversations",
+    {
+      title: "List Slack conversations",
+      description:
+        "Discover public and private channels this Slack token can see, one page per call, with each one's ID, name, type and, where Slack reports it, whether the app is a member. DMs and group DMs are not listed; read one whose ID you already have with the history tools. Slack lists private channels only where the app is a member, so even a full walk is not a complete workspace inventory. Pass nextCursor back with the same types until it is absent; a page can be short or empty while more remain. Each type needs its read scope (channels:read for public channels, groups:read for private ones). Slack may leave out a type the token has no scope for, or refuse the call with an error, so a page without a type does not show there are none.",
+      inputSchema: {
+        types: z
+          .array(z.enum(SLACK_CONVERSATION_TYPES))
+          .min(1)
+          .optional()
+          .describe("Conversation types to list (default public_channel)"),
+        excludeArchived: z
+          .boolean()
+          .optional()
+          .describe("Leave out archived conversations (default true)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SLACK_HISTORY_PAGE)
+          .optional()
+          .describe(`Page size, at most ${MAX_SLACK_HISTORY_PAGE} (default 100)`),
+        cursor: z
+          .string()
+          .optional()
+          .describe("nextCursor from the previous page; keep the same types and archive filter"),
+      },
+    },
+    async ({ types, excludeArchived, limit, cursor }) => {
+      try {
+        return toolOk(
+          await client.listConversations({
+            types: [...new Set<SlackConversationType>(types ?? ["public_channel"])],
+            excludeArchived: excludeArchived ?? true,
+            limit: limit ?? 100,
+            ...(cursor ? { cursor } : {}),
+          })
+        );
       } catch (err) {
         return toolError(err);
       }

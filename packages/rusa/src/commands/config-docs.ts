@@ -240,8 +240,15 @@ slack:
                            or im:history for private channels, group DMs or DMs. Slack answers not_in_channel
                            when the app has not been added to the conversation. Each call returns one page;
                            walk a date range or thread by passing nextCursor back with the same bounds.
-                           Every actor gets these read tools with no channel allowlist, so any actor can list
-                           whatever the token can read, including DMs the app is in when im:history is granted.
+                           list_conversations lists public and private channels, not DMs or group DMs;
+                           it needs channels:read, and groups:read for private channels. Slack shows it
+                           private channels only where the app is a member, and may leave out a type the
+                           token has no scope for, so a listing is not a complete workspace inventory.
+                           Every actor gets these read tools with no channel allowlist: any actor can list the
+                           types above, and can read the history of any conversation whose ID it already has and
+                           the token can read, including a DM or group DM the app is in when im:history or
+                           mpim:history is granted.
+                           Those scopes do not make list_conversations list DMs or group DMs.
   Root owns inbound slack:channels; workers may receive delegated channels.
   Message references use slack:channels/<id>/messages/<timestamp>.
 

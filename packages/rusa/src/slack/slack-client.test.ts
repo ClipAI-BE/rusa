@@ -243,7 +243,7 @@ describe("SlackClient history pages", () => {
     const err = await client.listHistory("G1", { limit: 10 }).catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toBe(
-      "Slack token lacks the scope conversations.history needs for this conversation (needed: groups:history)"
+      "Slack token lacks a scope conversations.history needs for this request (needed: groups:history)"
     );
     expect((err as Error).message).not.toContain("chat:write");
   });
@@ -281,5 +281,133 @@ describe("SlackClient history pages", () => {
     );
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("SlackClient conversation discovery", () => {
+  function slackApi(replies: { status?: number; body: unknown }[]) {
+    const requests: Record<string, string>[] = [];
+    const fetch = vi.fn(async (url: string | URL, init?: { body?: unknown }) => {
+      expect(String(url)).toMatch(/conversations\.list$/);
+      const params = Object.fromEntries(new URLSearchParams(String(init?.body ?? "")));
+      delete params.token;
+      requests.push(params);
+      const reply = replies.shift() ?? { body: { ok: true } };
+      return new Response(JSON.stringify(reply.body), {
+        status: reply.status ?? 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    return { client: new SlackClient("xoxb-synthetic", { fetch }), requests };
+  }
+
+  it("lists one page with stable IDs, types and Slack's membership flags", async () => {
+    const { client, requests } = slackApi([
+      {
+        body: {
+          ok: true,
+          channels: [
+            { id: "C1", name: "general", is_channel: true, is_member: true, is_archived: false },
+            { id: "C2", name: "random", is_channel: true, is_member: false, is_archived: false },
+            {
+              id: "G1",
+              name: "ops",
+              is_channel: false,
+              is_group: true,
+              is_private: true,
+              is_member: true,
+            },
+            {
+              id: "C3",
+              name: "eng-private",
+              is_channel: true,
+              is_private: true,
+              is_member: true,
+            },
+            { id: "X1", name: "odd" },
+            { name: "no-id", is_channel: true },
+          ],
+          response_metadata: { next_cursor: "dGVhbTpD" },
+        },
+      },
+    ]);
+    const page = await client.listConversations({
+      types: ["public_channel", "private_channel"],
+      excludeArchived: true,
+      limit: 7,
+    });
+    expect(requests).toEqual([
+      { types: "public_channel,private_channel", exclude_archived: "true", limit: "7" },
+    ]);
+    expect(page).toEqual({
+      conversations: [
+        { id: "C1", name: "general", type: "public_channel", isMember: true, isArchived: false },
+        { id: "C2", name: "random", type: "public_channel", isMember: false, isArchived: false },
+        { id: "G1", name: "ops", type: "private_channel", isMember: true },
+        { id: "C3", name: "eng-private", type: "private_channel", isMember: true },
+        { id: "X1", name: "odd", type: "unknown" },
+      ],
+      hasMore: true,
+      nextCursor: "dGVhbTpD",
+    });
+  });
+
+  it("keeps walking through an empty page that still carries a cursor", async () => {
+    const { client, requests } = slackApi([
+      { body: { ok: true, channels: [], response_metadata: { next_cursor: "page-2" } } },
+      {
+        body: {
+          ok: true,
+          channels: [{ id: "C9", name: "old", is_channel: true, is_archived: true }],
+          response_metadata: { next_cursor: "" },
+        },
+      },
+    ]);
+    const first = await client.listConversations({
+      types: ["public_channel"],
+      excludeArchived: false,
+      limit: 1,
+    });
+    expect(first).toEqual({
+      conversations: [],
+      hasMore: true,
+      nextCursor: "page-2",
+    });
+    const second = await client.listConversations({
+      types: ["public_channel"],
+      excludeArchived: false,
+      limit: 1,
+      cursor: "page-2",
+    });
+    expect(requests[1]).toEqual({
+      types: "public_channel",
+      exclude_archived: "false",
+      limit: "1",
+      cursor: "page-2",
+    });
+    expect(second).toEqual({
+      conversations: [{ id: "C9", name: "old", type: "public_channel", isArchived: true }],
+      hasMore: false,
+    });
+  });
+
+  it("reports Slack's missing_scope answer, naming only the scope it needs", async () => {
+    const { client } = slackApi([
+      {
+        body: {
+          ok: false,
+          error: "missing_scope",
+          needed: "groups:read",
+          provided: "channels:read,chat:write",
+        },
+      },
+    ]);
+    const err = await client
+      .listConversations({ types: ["private_channel"], excludeArchived: true, limit: 10 })
+      .catch((e: Error) => e);
+    expect((err as Error).message).toBe(
+      "Slack token lacks a scope conversations.list needs for this request (needed: groups:read)"
+    );
+    expect((err as Error).message).not.toContain("chat:write");
   });
 });

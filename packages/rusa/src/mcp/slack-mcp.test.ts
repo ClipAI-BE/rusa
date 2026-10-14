@@ -868,3 +868,65 @@ describe("Slack write MCP successful-write hook", () => {
     });
   });
 });
+
+describe("Slack read MCP conversation discovery", () => {
+  function discoveryServer(list: ReturnType<typeof vi.fn>) {
+    const client = new SlackClient(TOKEN);
+    Object.defineProperty(client, "historyWeb", { value: { conversations: { list } } });
+    return connect(createSlackReadMcpServer(client));
+  }
+
+  it("defaults to unarchived public channels, one page of 100", async () => {
+    const list = vi.fn(async () => ({
+      channels: [{ id: "C1", name: "general", is_channel: true, is_member: true }],
+    }));
+    const client = await discoveryServer(list);
+    const result = await call(client, "list_conversations", {});
+    expect(result.isError).toBe(false);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith({
+      types: "public_channel",
+      exclude_archived: true,
+      limit: 100,
+    });
+    expect(JSON.parse(result.text)).toEqual({
+      conversations: [{ id: "C1", name: "general", type: "public_channel", isMember: true }],
+      hasMore: false,
+    });
+  });
+
+  it("passes requested types once each, the archive filter and the cursor", async () => {
+    const list = vi.fn(async () => ({ channels: [] }));
+    const client = await discoveryServer(list);
+    const result = await call(client, "list_conversations", {
+      types: ["private_channel", "public_channel", "private_channel"],
+      excludeArchived: false,
+      limit: 20,
+      cursor: "next",
+    });
+    expect(result.isError).toBe(false);
+    expect(list).toHaveBeenCalledWith({
+      types: "private_channel,public_channel",
+      exclude_archived: false,
+      limit: 20,
+      cursor: "next",
+    });
+  });
+
+  it.each([
+    [{ types: [] }],
+    [{ types: ["channel"] }],
+    [{ types: ["im"] }],
+    [{ types: ["mpim"] }],
+    [{ types: ["public_channel", "im"] }],
+    [{ types: ["private_channel", "mpim"] }],
+    [{ limit: 0 }],
+    [{ limit: 201 }],
+  ])("rejects %j before calling Slack", async (args) => {
+    const list = vi.fn(async () => ({ channels: [] }));
+    const client = await discoveryServer(list);
+    const result = await call(client, "list_conversations", args);
+    expect(result.isError).toBe(true);
+    expect(list).not.toHaveBeenCalled();
+  });
+});
