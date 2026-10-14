@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { ErrorCode, type FetchFunction, WebClient } from "@slack/web-api";
@@ -322,6 +323,96 @@ export function describeSlackReadError(method: string, err: unknown): Error {
   }
 }
 
+/**
+ * Most files one composed Slack message may carry. Slack's help center lets a
+ * person drag "up to 10 files" into one message
+ * (https://slack.com/help/articles/201330736-Add-files-to-Slack); the
+ * files.completeUploadExternal reference states no per-call limit.
+ */
+export const MAX_SLACK_MESSAGE_FILES = 10;
+
+/**
+ * files.completeUploadExternal error codes that mean Slack refused the call
+ * before sharing anything: authorization, membership, policy and malformed
+ * request failures. Slack's error table
+ * (https://docs.slack.dev/reference/methods/files.completeUploadExternal/#errors)
+ * says `internal_error` and `fatal_error` may have succeeded in part, and it
+ * does not say that `file_update_failed`, `request_timeout` or
+ * `service_unavailable` happen before any side effect, so those, any code not
+ * listed here and a missing code all leave the outcome unknown. The same goes
+ * for `team_added_to_org` and `org_login_required`: the table says only that
+ * the workspace is migrating to an Enterprise Organization, not that the call
+ * is refused before anything is shared.
+ */
+const SHARE_REFUSAL_CODES = new Set([
+  "access_denied",
+  "accesslimited",
+  "account_inactive",
+  "channel_not_found",
+  "channels_limit_exceeded",
+  "deprecated_endpoint",
+  "ekm_access_denied",
+  "enterprise_is_restricted",
+  "file_not_found",
+  "file_type_not_allowed",
+  "file_uploads_except_images_disabled",
+  "invalid_arg_name",
+  "invalid_arguments",
+  "invalid_array_arg",
+  "invalid_auth",
+  "invalid_blocks",
+  "invalid_channel",
+  "invalid_charset",
+  "invalid_form_data",
+  "invalid_post_type",
+  "method_deprecated",
+  "missing_post_type",
+  "missing_scope",
+  "no_permission",
+  "not_allowed_token_type",
+  "not_authed",
+  "not_in_channel",
+  "posting_to_channel_denied",
+  "ratelimited",
+  "team_access_not_granted",
+  "token_expired",
+  "token_revoked",
+  "two_factor_setup_required",
+  "user_is_external_guest",
+]);
+
+/**
+ * Rephrase a failed {@link SlackClient.completeFileShare}. A rate limit or a
+ * documented refusal ({@link SHARE_REFUSAL_CODES}) means nothing was shared.
+ * Any other failure, such as a server error, an unknown or missing error code
+ * or a dropped connection, leaves the outcome unknown, so `mayHaveShared` is
+ * set and the caller must treat the message as possibly posted.
+ */
+export function describeShareFailure(err: unknown): { error: Error; mayHaveShared: boolean } {
+  const method = "files.completeUploadExternal";
+  const code = (err as { code?: string })?.code;
+  const slackCode = slackErrorCode(err);
+  if (
+    code === ErrorCode.RateLimitedError ||
+    (code === ErrorCode.PlatformError && slackCode && SHARE_REFUSAL_CODES.has(slackCode))
+  ) {
+    const reason = describeSlackReadError(method, err).message;
+    return { error: new Error(`${reason}; nothing was shared`), mayHaveShared: false };
+  }
+  const reason =
+    code === ErrorCode.PlatformError
+      ? (slackCode ?? "no error code")
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  return {
+    error: new Error(
+      `Slack ${method} failed (${reason}); the files may or may not have been shared, so check the channel before sending again`
+    ),
+    mayHaveShared: true,
+  };
+}
+
 /** Copy only the keys whose value is defined, so absent stays absent. */
 function defined<T extends Record<string, unknown>>(fields: T): Partial<T> {
   return Object.fromEntries(
@@ -443,12 +534,14 @@ function sizeLimitError(maxBytes: number): Error {
 export class SlackClient {
   readonly web: WebClient;
   /**
-   * The client for the history and discovery tools, `getUser` and `identify`:
-   * a rate-limited call fails with Slack's retry-after instead of the SDK
-   * silently waiting, and a network or HTTP failure is not retried, so an
-   * actor's tool call reports the failure rather than stalling for the SDK's
-   * default of ten retries over about 30 minutes, and an ingress identity
-   * lookup fails promptly and is retried on a later event.
+   * The client for the history and discovery tools, `getUser`, `identify`,
+   * and a composed message's file reservations and share: a rate-limited call
+   * fails with Slack's retry-after instead of the SDK silently waiting, and a
+   * network or HTTP failure is not retried, so an actor's tool call reports the
+   * failure rather than stalling for the SDK's default of ten retries over
+   * about 30 minutes, and an ingress identity lookup fails promptly and is
+   * retried on a later event. Not retrying also means an ambiguous share
+   * failure is never sent again, which could post the files twice.
    */
   readonly historyWeb: WebClient;
   readonly #botToken: string;
@@ -605,6 +698,105 @@ export class SlackClient {
     const completions = (response as { files?: { files?: { id?: string }[] }[] }).files ?? [];
     const ids = completions.flatMap((c) => c.files ?? []).flatMap((f) => (f.id ? [f.id] : []));
     return ids;
+  }
+
+  /**
+   * Step 1 of the external upload flow for one file of a composed message:
+   * Slack reserves a file ID and a URL for exactly `bytes` bytes. Nothing is
+   * shared until {@link completeFileShare}.
+   */
+  async reserveFileUpload(
+    filename: string,
+    bytes: number
+  ): Promise<{ fileId: string; uploadUrl: string }> {
+    const response = await this.historyWeb.files.getUploadURLExternal({
+      filename,
+      length: bytes,
+    });
+    if (!response.file_id || !response.upload_url) {
+      throw new Error("Slack did not return an upload URL and file ID");
+    }
+    return { fileId: response.file_id, uploadUrl: response.upload_url };
+  }
+
+  /**
+   * Step 2: stream a file's bytes to the URL {@link reserveFileUpload} returned,
+   * as the same multipart form the SDK's `uploadV2` posts, with an exact
+   * Content-Length so nothing is buffered. Like `uploadV2`, which sends the
+   * client's Authorization header with this POST, it sends the bot token, and
+   * only to Slack's file host over https with redirects refused.
+   */
+  async sendFileBytes(
+    uploadUrl: string,
+    bytes: number,
+    content: ReadableStream<Uint8Array>
+  ): Promise<void> {
+    const url = new URL(uploadUrl);
+    if (url.protocol !== "https:" || url.hostname !== SLACK_FILE_HOST) {
+      await content.cancel().catch(() => {});
+      throw new Error(`refusing to upload file content to ${url.host}`);
+    }
+    const boundary = `rusa-${randomUUID()}`;
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="body"; filename="upload"\r\n` +
+        "Content-Type: application/octet-stream\r\n\r\n"
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const reader = content.getReader();
+    let sentHead = false;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (!sentHead) {
+          sentHead = true;
+          controller.enqueue(new Uint8Array(head));
+          return;
+        }
+        const { done, value } = await reader.read();
+        if (!done) {
+          controller.enqueue(value);
+          return;
+        }
+        controller.enqueue(new Uint8Array(tail));
+        controller.close();
+      },
+      async cancel(reason) {
+        await reader.cancel(reason).catch(() => {});
+      },
+    });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.#botToken}`,
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+        "content-length": String(head.length + bytes + tail.length),
+      },
+      body,
+      duplex: "half",
+      redirect: "error",
+    } as RequestInit);
+    await resp.body?.cancel().catch(() => {});
+    if (resp.status !== 200) throw new Error(`Slack file upload failed: HTTP ${resp.status}`);
+  }
+
+  /**
+   * Step 3: share every reserved and uploaded file as one message, with `text`
+   * as its body. This is the only step with a visible effect, so it is sent
+   * once, without the SDK's automatic retries: a failure is reported, and
+   * {@link describeShareFailure} says whether the share is known not to have
+   * happened. Returns the file IDs Slack confirms.
+   */
+  async completeFileShare(
+    channel: string,
+    files: [{ id: string; title?: string }, ...{ id: string; title?: string }[]],
+    opts: { threadTs?: string; text?: string } = {}
+  ): Promise<string[]> {
+    const response = await this.historyWeb.files.completeUploadExternal({
+      channel_id: channel,
+      files,
+      ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+      ...(opts.text ? { initial_comment: opts.text } : {}),
+    });
+    return (response.files ?? []).flatMap((f) => (f.id ? [f.id] : []));
   }
 
   /**
