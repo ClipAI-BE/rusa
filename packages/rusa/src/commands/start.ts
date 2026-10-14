@@ -4495,7 +4495,7 @@ async function composeStart(
       if (config.chat?.excludedSpaces?.includes(msg.spaceName)) {
         return;
       }
-      const trigger = chatMessageWakes(msg, mesh.chatWakeModeFor(msg.spaceName));
+      const trigger = chatMessageWakes(msg, mesh.chatWakeModeFor(`gchat:${msg.spaceName}`));
       const who = msg.senderDisplayName ?? msg.senderName;
       console.log(`[chat] ${trigger ? "▶ trigger" : "·"} ${msg.spaceName} from ${who}`);
       if (!trigger) return;
@@ -4768,7 +4768,7 @@ async function composeStart(
                 error: err instanceof Error ? err.message : String(err),
               })
           ),
-          wakeModeFor: (channel) => mesh.slackWakeModeFor(channel),
+          wakeModeFor: (channel) => mesh.chatWakeModeFor(`slack:channels/${channel}`),
         }
       );
       resources.acquire("slack source", () => source?.close());

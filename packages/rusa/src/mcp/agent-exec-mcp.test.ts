@@ -2448,9 +2448,9 @@ describe("agent-execution MCP server", () => {
         config: { version: 1, chatWakeMode: "mentions" },
       });
       expect(res.isError).toBeFalsy();
-      expect(mesh.chatWakeModeFor("spaces/team")).toBe("mentions");
+      expect(mesh.chatWakeModeFor("gchat:spaces/team")).toBe("mentions");
       // Another of root's spaces is untouched, and the owner has no say over it.
-      expect(mesh.chatWakeModeFor("spaces/other")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("gchat:spaces/other")).toBeUndefined();
       res = await call(ownerClient, "set_event_source_config", {
         source: "gchat:spaces/other",
         config: { version: 1, chatWakeMode: "all" },
@@ -2464,14 +2464,14 @@ describe("agent-execution MCP server", () => {
         config: { version: 1, chatWakeMode: "mentions" },
       });
       expect(res.isError).toBe(true);
-      expect(mesh.chatWakeModeFor("spaces/team")).toBe("mentions");
+      expect(mesh.chatWakeModeFor("gchat:spaces/team")).toBe("mentions");
 
       res = await call(ownerClient, "set_event_source_config", {
         source: "gchat:spaces/team",
         config: null,
       });
       expect(dataOf(res)).toEqual({ resource: "gchat:spaces/team", config: null });
-      expect(mesh.chatWakeModeFor("spaces/team")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("gchat:spaces/team")).toBeUndefined();
       // An unparseable or non-space resource returns undefined without throwing (#695).
       expect(mesh.chatWakeModeFor("malformed space name")).toBeUndefined();
       expect(mesh.chatWakeModeFor("gchat:spaces")).toBeUndefined();
@@ -2515,13 +2515,21 @@ describe("agent-execution MCP server", () => {
       const call = async (client: typeof rootClient, name: string, args: Record<string, unknown>) =>
         (await client.callTool({ name, arguments: args })) as CallToolResult;
 
+      // Identical provider-local ids still name different conversations.
+      mesh.subscribeEventSource("gchat:spaces/C1", "root", "root");
+      await call(rootClient, "set_event_source_config", {
+        source: "gchat:spaces/C1",
+        config: { version: 1, chatWakeMode: "all" },
+      });
+      expect(mesh.chatWakeModeFor("gchat:spaces/C1")).toBe("all");
+
       // A broad Slack policy is not inherited by any one conversation.
       const broad = await call(rootClient, "set_event_source_config", {
         source: "slack:channels",
-        config: { version: 1, slackWakeMode: "all" },
+        config: { version: 1, chatWakeMode: "all" },
       });
       expect(broad.isError).toBeFalsy();
-      expect(mesh.slackWakeModeFor("C1")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C1")).toBeUndefined();
 
       await call(rootClient, "delegate_event_source", {
         child_thread_id: "t1",
@@ -2530,15 +2538,15 @@ describe("agent-execution MCP server", () => {
       // Only the exact owner may write it; root delegated it away.
       let res = await call(rootClient, "set_event_source_config", {
         source: "slack:channels/C1",
-        config: { version: 1, slackWakeMode: "all" },
+        config: { version: 1, chatWakeMode: "all" },
       });
       expect(res.isError).toBe(true);
-      expect(mesh.slackWakeModeFor("C1")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C1")).toBeUndefined();
 
       // all -> mentions -> unset, each read back from the exact row, keeping
       // unrelated keys the owner wrote alongside it.
       for (const mode of ["all", "mentions"] as const) {
-        const config = { version: 1, slackWakeMode: mode, chatWakeMode: "all", note: "kept" };
+        const config = { version: 1, chatWakeMode: mode, note: "kept" };
         res = await call(ownerClient, "set_event_source_config", {
           source: "slack:channels/C1",
           config,
@@ -2547,25 +2555,28 @@ describe("agent-execution MCP server", () => {
         expect(dataOf(await call(ownerClient, "list_event_sources", {}))).toEqual([
           { resource: "slack:channels/C1", config },
         ]);
-        expect(mesh.slackWakeModeFor("C1")).toBe(mode);
+        expect(mesh.chatWakeModeFor("slack:channels/C1")).toBe(mode);
+        expect(mesh.chatWakeModeFor("gchat:spaces/C1")).toBe("all");
       }
       // Another conversation, and a thread or message below this one, borrow nothing.
-      expect(mesh.slackWakeModeFor("C2")).toBeUndefined();
-      expect(mesh.slackWakeModeFor("C1/messages/1.0")).toBeUndefined();
-      expect(mesh.slackWakeModeFor("")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C2")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C1/messages/1.0")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/malformed channel")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("")).toBeUndefined();
 
       res = await call(ownerClient, "set_event_source_config", {
         source: "slack:channels/C1",
-        config: { version: 1, slackWakeMode: "loud" },
+        config: { version: 1, chatWakeMode: "loud" },
       });
       expect(res.isError).toBeFalsy();
-      expect(mesh.slackWakeModeFor("C1")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C1")).toBeUndefined();
       res = await call(ownerClient, "set_event_source_config", {
         source: "slack:channels/C1",
         config: null,
       });
       expect(dataOf(res)).toEqual({ resource: "slack:channels/C1", config: null });
-      expect(mesh.slackWakeModeFor("C1")).toBeUndefined();
+      expect(mesh.chatWakeModeFor("slack:channels/C1")).toBeUndefined();
     });
 
     it("keeps opaque source configuration with its exact row during a live obligation claim (#692)", async () => {
