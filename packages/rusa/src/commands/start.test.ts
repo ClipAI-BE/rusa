@@ -9139,12 +9139,18 @@ describe("runStart webhook event routing (Phase 4)", () => {
       expect(records("service_stopped")).toEqual([]);
     });
 
-    it("protects root and granted-worker runs once a Slack write succeeds, not when it fails", async () => {
+    it("protects root and granted-worker runs once a Slack write succeeds, not when it fails, and signs each run's posts", async () => {
       const secretsDir = join(homeDir, "secrets");
       mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
       writeFileSync(join(secretsDir, "slack-bot-token"), "xoxb-synthetic-bot-token");
       writeFileSync(join(secretsDir, "slack-app-token"), "xapp-synthetic-app-token");
       writeConfig({
+        rootActor: {
+          provider: "antigravity",
+          model: "Gemini 3.7 Flash",
+          effort: "high",
+          handle: "slack-root",
+        },
         slack: {
           botTokenPath: join(secretsDir, "slack-bot-token"),
           appTokenPath: join(secretsDir, "slack-app-token"),
@@ -9154,7 +9160,7 @@ describe("runStart webhook event routing (Phase 4)", () => {
       const closeSpy = vi.spyOn(SlackSocketSource.prototype, "close").mockResolvedValue(undefined);
       const slackClient = new SlackClient("xoxb-synthetic-bot-token");
       const postMessage = vi.fn(async ({ text }: { text: string }) => {
-        if (text === "refused") throw new Error("An API error occurred: not_in_channel");
+        if (text.startsWith("refused")) throw new Error("An API error occurred: not_in_channel");
         return { ok: true, ts: "1791849600.000100" };
       });
       Object.defineProperty(slackClient, "web", { value: { chat: { postMessage } } });
@@ -9195,6 +9201,24 @@ describe("runStart webhook event routing (Phase 4)", () => {
           }
         };
 
+        type AttemptOptions = {
+          onProviderAttempt?: (attempt: {
+            providerName: string;
+            model?: string;
+            effort?: string;
+          }) => void;
+        };
+        (root as unknown as { opts: AttemptOptions }).opts.onProviderAttempt?.({
+          providerName: "antigravity",
+          model: "Gemini 3.7 Flash",
+          effort: "high",
+        });
+        (worker as unknown as { opts: AttemptOptions }).opts.onProviderAttempt?.({
+          providerName: "antigravity",
+          model: "Gemini 3.7 Pro",
+          effort: "low",
+        });
+
         for (const actor of [root, worker]) {
           expect(killable(actor)).toBe(true);
           expect((await send(actor, "refused")).isError).toBe(true);
@@ -9203,6 +9227,16 @@ describe("runStart webhook event routing (Phase 4)", () => {
           expect(killable(actor)).toBe(false);
         }
         expect(postMessage).toHaveBeenCalledTimes(4);
+
+        // Each run signs with its own handle and model: root's configured handle, the grantee's own.
+        const rootFooter = "\n\n_slack-root (Gemini 3.7 Flash, high)_";
+        const workerFooter = `\n\n_${generateHandle("slack-write-worker")} (Gemini 3.7 Pro, low)_`;
+        expect(postMessage.mock.calls.map(([args]) => args.text)).toEqual([
+          `refused${rootFooter}`,
+          `posted${rootFooter}`,
+          `refused${workerFooter}`,
+          `posted${workerFooter}`,
+        ]);
       } finally {
         startSpy.mockRestore();
         closeSpy.mockRestore();
