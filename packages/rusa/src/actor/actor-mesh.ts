@@ -1,9 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  type ChatWakeMode,
-  chatWakeModeFromConfig,
-  tryChatSpaceResource,
-} from "../chat/wake-mode.js";
+import { type ChatWakeMode, chatWakeModeFromConfig } from "../chat/wake-mode.js";
 import { assertSecretContainment, secretsDirPath } from "../config/secrets.js";
 import { getDb } from "../db/index.js";
 import type { MeshChat } from "../db/repositories/mesh-chat-repository.js";
@@ -28,6 +24,7 @@ import {
 } from "../providers/model-config.js";
 import type { AbortReason } from "../providers/termination-attribution.js";
 import type { RunResult } from "../providers/types.js";
+import { parseReference } from "../references/reference.js";
 import type { ActorRepository } from "../repositories/actor-repository.js";
 import {
   EmptyInboxRepository,
@@ -4014,19 +4011,29 @@ export class ActorMesh {
   }
 
   /**
-   * The stored wake mode of a Google Chat space, or `undefined` when the space
-   * follows the built-in default (#692). Read by chat ingestion for every
-   * arriving message, so a change governs the next message; the host is the
-   * caller, so no ownership check applies here.
+   * The stored wake mode of one Google Chat space or Slack conversation, or
+   * `undefined` when it follows its integration's default (#692, #1037).
+   * Callers supply `gchat:spaces/<id>` or `slack:channels/<id>`.
+   * Only the exact conversation row counts, without
+   * inheriting a parent, thread, or global policy. Read for every arrival, so
+   * a change governs the next message; the host is the caller, so no ownership
+   * check applies here.
    *
-   * An unexpected or unparseable inbound space name cannot have a stored mode;
+   * An unexpected or unparseable inbound conversation cannot have a stored mode;
    * it falls back safely to `undefined` so ingestion keeps the built-in default
    * without throwing before the emergency halt brake (#695 review).
    */
-  chatWakeModeFor(space: EventResource): ChatWakeMode | undefined {
-    const resource = tryChatSpaceResource(space);
-    if (!resource) return undefined;
-    return chatWakeModeFromConfig(this.eventSourceOwners.getConfig(resource));
+  chatWakeModeFor(conversation: EventResource): ChatWakeMode | undefined {
+    let ref: ReturnType<typeof parseReference>;
+    try {
+      ref = parseReference(conversation);
+    } catch {
+      return undefined;
+    }
+    const collection =
+      ref.scheme === "gchat" ? "spaces" : ref.scheme === "slack" ? "channels" : undefined;
+    if (ref.segments.length !== 2 || ref.segments[0] !== collection) return undefined;
+    return chatWakeModeFromConfig(this.eventSourceOwners.getConfig(ref.key));
   }
 
   /**

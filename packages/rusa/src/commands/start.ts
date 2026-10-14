@@ -200,7 +200,11 @@ import {
 import { McpHttpServer } from "../mcp/http-server.js";
 import { createInboxMcpServer, INBOX_MCP_NAME, type SelectedInboxRun } from "../mcp/inbox-mcp.js";
 import { createMeshChatMcpServer, MESH_CHAT_MCP_NAME } from "../mcp/mesh-chat-mcp.js";
-import { createObligationsMcpServer, OBLIGATIONS_MCP_NAME } from "../mcp/obligations-mcp.js";
+import {
+  createObligationsMcpServer,
+  OBLIGATION_RESPONSIVE_CAPABILITY,
+  OBLIGATIONS_MCP_NAME,
+} from "../mcp/obligations-mcp.js";
 import type { PnpmHardlinksToolDeps } from "../mcp/pnpm-hardlinks-mcp.js";
 import { createPnpmInstallMcpServer, PNPM_INSTALL_MCP_NAME } from "../mcp/pnpm-install-mcp.js";
 import { createQuotaMcpServer, createQuotaService, QUOTA_MCP_NAME } from "../mcp/quota-mcp.js";
@@ -311,8 +315,10 @@ import {
 import { ResourceScope } from "../runtime/resource-scope.js";
 import { readSlackToken, SlackClient } from "../slack/slack-client.js";
 import {
+  rememberSlackSelf,
   type SlackInboundMessage,
   SlackSocketSource,
+  slackInboxEvent,
   withReceiptReaction,
 } from "../slack/socket-source.js";
 import { createCommitmentPolarityEvaluator } from "../understanding/commitment-polarity.js";
@@ -715,6 +721,8 @@ export interface RunStartE2EHooks {
    */
   createWorkerActor?: (context: ActorFactoryContext, options: ActorOptions) => MeshActor;
   chatClient?: ChatClient;
+  /** Stands in for the Slack Web API client; the socket source still needs real config. */
+  slackClient?: SlackClient;
   chatSource?: ChatSource;
   rootDriver?: "provider" | "external";
   dashboard?: boolean;
@@ -1573,7 +1581,8 @@ async function composeStart(
       ),
   };
   let chatClient: ChatClient | null = opts?.e2e?.chatClient ?? null;
-  const slackClient = slackBotToken ? new SlackClient(slackBotToken) : null;
+  const slackClient =
+    opts?.e2e?.slackClient ?? (slackBotToken ? new SlackClient(slackBotToken) : null);
   let gchat: GchatClient | null = null;
   if (!chatClient && config.chat && !opts?.e2e) {
     gchat = new GchatClient(config.chat.gchatConfigDir);
@@ -2474,6 +2483,7 @@ async function composeStart(
     chatClient: chatClient ?? undefined,
     slackClient: slackClient ?? undefined,
     onChatWrite: (actorId) => mesh.markUnkillable(actorId),
+    onSlackWrite: (actorId) => mesh.markUnkillable(actorId),
     getRunSelectionForActor: (id) => activeRunSelections.get(id),
     selectedInboxEntriesForActor,
     logger: log,
@@ -3028,11 +3038,13 @@ async function composeStart(
     // host-global names listed here (`update`, `pnpm-hardlinks`, `model-admin`,
     // `room-admin`)
     // are stripped by the mesh: it never grants one, and only the seed below
-    // creates their rows.
+    // creates their rows. `obligation-responsive` (#1026) likewise mounts
+    // nothing: each worker's obligations server reads the grant per call.
     grantableCapabilities: new Set([
       ...grantableServers.keys(),
       SECRET_CAPABILITY_BASE,
       COMPUTER_USE_CAPABILITY,
+      OBLIGATION_RESPONSIVE_CAPABILITY,
       ...ADMINISTRATIVE_CAPABILITIES,
     ]),
     secretsDir: secretsDirPath(mcHome),
@@ -3271,6 +3283,7 @@ async function composeStart(
               resolveObligationOwner(actors, raw, getRepositories().principals),
             canManage: (callerId, obligation) =>
               canManageObligation(callerId, obligation, mesh.isAncestorOf.bind(mesh)),
+            canSetResponsive: () => mesh.hasActiveCapability(id, OBLIGATION_RESPONSIVE_CAPABILITY),
             recordEvent: (event) => mesh.recordEvent(event),
             validateCompletionMatcher,
             evaluateCompletionMatcher: (obligationId) =>
@@ -3728,7 +3741,7 @@ async function composeStart(
   );
   const rootObligationsUrl = mcpHttp.addServer(`${rootId}:${OBLIGATIONS_MCP_NAME}`, () =>
     createObligationsMcpServer(getRepositories().obligations, rootId, {
-      canSetResponsive: true,
+      canSetResponsive: () => true,
       canManage: () => true,
       resolveOwner: (raw) => resolveObligationOwner(actors, raw, getRepositories().principals),
       recordEvent: (event) => mesh.recordEvent(event),
@@ -3804,7 +3817,14 @@ async function composeStart(
   const rootSlackUrl =
     slackClient && config.slack
       ? mcpHttp.addServer(`${rootId}:${SLACK_WRITE_MCP_NAME}`, () =>
-          createSlackWriteMcpServer(slackClient, "all", { workDir: rootAgentDir })
+          createSlackWriteMcpServer(slackClient, "all", {
+            actorHandle: rootHandle,
+            getRunSelection: () => activeRunSelections.get(rootId),
+            workDir: rootAgentDir,
+            onWrite: () => mesh.markUnkillable(rootId),
+            selectedInboxEntries: () => selectedInboxEntriesForActor(rootId),
+            logger: log,
+          })
         )
       : undefined;
 
@@ -4475,7 +4495,7 @@ async function composeStart(
       if (config.chat?.excludedSpaces?.includes(msg.spaceName)) {
         return;
       }
-      const trigger = chatMessageWakes(msg, mesh.chatWakeModeFor(msg.spaceName));
+      const trigger = chatMessageWakes(msg, mesh.chatWakeModeFor(`gchat:${msg.spaceName}`));
       const who = msg.senderDisplayName ?? msg.senderName;
       console.log(`[chat] ${trigger ? "▶ trigger" : "·"} ${msg.spaceName} from ${who}`);
       if (!trigger) return;
@@ -4722,18 +4742,7 @@ async function composeStart(
         (event) => log.info("slack_event_received", event)
       );
       const deliver = async (msg: SlackInboundMessage) => {
-        const delivery = await mesh.deliverExternalEvent({
-          sourceType: "slack",
-          rawPayload: {
-            channel: msg.channel,
-            ts: msg.ts,
-            threadTs: msg.threadTs,
-            user: msg.user,
-          },
-          idempotencyKey: msg.eventId,
-          priority: "responsive",
-          eventSummary: `Slack message from ${msg.user}`,
-        });
+        const delivery = await mesh.deliverExternalEvent(slackInboxEvent(msg));
         log.info("slack_message_delivered", { channel: msg.channel, eventId: msg.eventId });
         return delivery;
       };
@@ -4747,7 +4756,20 @@ async function composeStart(
               eventId: msg.eventId,
               error: err instanceof Error ? err.message : String(err),
             })
-        )
+        ),
+        // Each conversation's stored mode is read per event (#1037), so a
+        // change governs the next arrival. No event waits for the bot's
+        // identity: until it is known, a plain-text mention goes undetected.
+        {
+          selfUserId: rememberSlackSelf(
+            () => slackClient.identify(),
+            (err) =>
+              log.warn("slack_self_identity_unavailable", {
+                error: err instanceof Error ? err.message : String(err),
+              })
+          ),
+          wakeModeFor: (channel) => mesh.chatWakeModeFor(`slack:channels/${channel}`),
+        }
       );
       resources.acquire("slack source", () => source?.close());
       log.info("slack_socket_active");

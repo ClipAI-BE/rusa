@@ -56,6 +56,7 @@ import { FollowerInstance } from "../remote-instances/follower-instance.js";
 import { INSTANCE_PROTOCOL_VERSION } from "../remote-instances/protocol.js";
 import { RemoteInstance } from "../remote-instances/remote-instance.js";
 import { deduplicatedInboxEntryId } from "../runtime/event-manager.js";
+import { SlackClient } from "../slack/slack-client.js";
 import { SlackSocketSource } from "../slack/socket-source.js";
 import { writeBuildSentinel } from "../update/build-sentinel.js";
 import { SUPPORTED_TTS_VOICES } from "../voice/tts-voices.js";
@@ -9136,6 +9137,171 @@ describe("runStart webhook event routing (Phase 4)", () => {
       expect(exitMock()).not.toHaveBeenCalled();
       expect(dbMock.closeDb).not.toHaveBeenCalled();
       expect(records("service_stopped")).toEqual([]);
+    });
+
+    it("protects root and granted-worker runs once a Slack write succeeds, not when it fails, and signs each run's posts", async () => {
+      const secretsDir = join(homeDir, "secrets");
+      mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(secretsDir, "slack-bot-token"), "xoxb-synthetic-bot-token");
+      writeFileSync(join(secretsDir, "slack-app-token"), "xapp-synthetic-app-token");
+      writeConfig({
+        rootActor: {
+          provider: "antigravity",
+          model: "Gemini 3.7 Flash",
+          effort: "high",
+          handle: "slack-root",
+        },
+        slack: {
+          botTokenPath: join(secretsDir, "slack-bot-token"),
+          appTokenPath: join(secretsDir, "slack-app-token"),
+        },
+      });
+      const startSpy = vi.spyOn(SlackSocketSource.prototype, "start").mockResolvedValue(undefined);
+      const closeSpy = vi.spyOn(SlackSocketSource.prototype, "close").mockResolvedValue(undefined);
+      const slackClient = new SlackClient("xoxb-synthetic-bot-token");
+      const postMessage = vi.fn(async ({ text }: { text: string }) => {
+        if (text.startsWith("refused")) throw new Error("An API error occurred: not_in_channel");
+        return { ok: true, ts: "1791849600.000100" };
+      });
+      Object.defineProperty(slackClient, "web", { value: { chat: { postMessage } } });
+      withWorker("slack-write-worker");
+      // A durable channel grant, as the worker would hold it after a restart.
+      writeFileSync(
+        join(homeDir, "capability-grants.json"),
+        JSON.stringify({
+          grants: [
+            {
+              actorId: "slack-write-worker",
+              capability: "slack-write:C1",
+              grantedBy: "root",
+              grantedAt: "2026-10-13T00:00:00.000Z",
+            },
+          ],
+        }),
+        "utf8"
+      );
+
+      try {
+        const { mesh, root } = await boot({ slackClient });
+        const worker = workerOf(mesh, "slack-write-worker");
+        // The flag a coalescing voice nudge reads before aborting the run in flight.
+        const killable = (actor: unknown): boolean => (actor as { killable: boolean }).killable;
+        const send = async (actor: unknown, text: string) => {
+          const url = mcpServersOf(actor).find((server) => server.name === "slack-write")?.url;
+          if (!url) throw new Error("slack-write not mounted");
+          const client = new Client({ name: "slack-write-hook", version: "0.0.0" });
+          await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+          try {
+            return await client.callTool({
+              name: "send_message",
+              arguments: { channel: "C1", text },
+            });
+          } finally {
+            await client.close();
+          }
+        };
+
+        type AttemptOptions = {
+          onProviderAttempt?: (attempt: {
+            providerName: string;
+            model?: string;
+            effort?: string;
+          }) => void;
+        };
+        (root as unknown as { opts: AttemptOptions }).opts.onProviderAttempt?.({
+          providerName: "antigravity",
+          model: "Gemini 3.7 Flash",
+          effort: "high",
+        });
+        (worker as unknown as { opts: AttemptOptions }).opts.onProviderAttempt?.({
+          providerName: "antigravity",
+          model: "Gemini 3.7 Pro",
+          effort: "low",
+        });
+
+        for (const actor of [root, worker]) {
+          expect(killable(actor)).toBe(true);
+          expect((await send(actor, "refused")).isError).toBe(true);
+          expect(killable(actor)).toBe(true);
+          expect((await send(actor, "posted")).isError).toBeFalsy();
+          expect(killable(actor)).toBe(false);
+        }
+        expect(postMessage).toHaveBeenCalledTimes(4);
+
+        // Each run signs with its own handle and model: root's configured handle, the grantee's own.
+        const rootFooter = "\n\n_slack-root (Gemini 3.7 Flash, high)_";
+        const workerFooter = `\n\n_${generateHandle("slack-write-worker")} (Gemini 3.7 Pro, low)_`;
+        expect(postMessage.mock.calls.map(([args]) => args.text)).toEqual([
+          `refused${rootFooter}`,
+          `posted${rootFooter}`,
+          `refused${workerFooter}`,
+          `posted${workerFooter}`,
+        ]);
+      } finally {
+        startSpy.mockRestore();
+        closeSpy.mockRestore();
+      }
+    });
+
+    it("routes the root's Slack reply into the thread of its selected inbox message", async () => {
+      const secretsDir = join(homeDir, "secrets");
+      mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(secretsDir, "slack-bot-token"), "xoxb-synthetic-bot-token");
+      writeFileSync(join(secretsDir, "slack-app-token"), "xapp-synthetic-app-token");
+      writeConfig({
+        slack: {
+          botTokenPath: join(secretsDir, "slack-bot-token"),
+          appTokenPath: join(secretsDir, "slack-app-token"),
+        },
+      });
+      const startSpy = vi.spyOn(SlackSocketSource.prototype, "start").mockResolvedValue(undefined);
+      const closeSpy = vi.spyOn(SlackSocketSource.prototype, "close").mockResolvedValue(undefined);
+      const slackClient = new SlackClient("xoxb-synthetic-bot-token");
+      const postMessage = vi.fn(async (_args: Record<string, unknown>) => ({
+        ok: true,
+        ts: "1791849600.000300",
+      }));
+      Object.defineProperty(slackClient, "web", { value: { chat: { postMessage } } });
+
+      try {
+        const { mesh, root } = await boot({ slackClient });
+        const [entry] = getRepositories().inbox.append([
+          {
+            actorId: root.id,
+            source: "slack:channels/C1",
+            payload: {
+              type: "slack.message",
+              channel: "C1",
+              ts: "1791849600.000200",
+              threadTs: "1791849600.000100",
+            },
+          },
+        ]);
+        if (!entry) throw new Error("Slack message not appended");
+        mesh.selectInboxEntries(root.id, [entry.id]);
+
+        const url = mcpServersOf(root).find((server) => server.name === "slack-write")?.url;
+        if (!url) throw new Error("slack-write not mounted");
+        const client = new Client({ name: "slack-reply-placement", version: "0.0.0" });
+        await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+        try {
+          const result = await client.callTool({
+            name: "send_message",
+            arguments: { channel: "C1", text: "on it" },
+          });
+          expect(result.isError).toBeFalsy();
+        } finally {
+          await client.close();
+        }
+        expect(postMessage).toHaveBeenCalledOnce();
+        expect(postMessage.mock.calls[0]?.[0]).toMatchObject({
+          channel: "C1",
+          thread_ts: "1791849600.000100",
+        });
+      } finally {
+        startSpy.mockRestore();
+        closeSpy.mockRestore();
+      }
     });
 
     it("closes the socket source immediately when slack startup fails", async () => {
