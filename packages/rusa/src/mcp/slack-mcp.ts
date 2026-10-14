@@ -159,12 +159,28 @@ export function createSlackReadMcpServer(
     {
       title: "Read a Slack message",
       description:
-        "Read a Slack message by channel ID and timestamp, including metadata for any attached files.",
+        "Read a Slack message by channel ID and timestamp: its mrkdwn text with link markup intact, sender IDs, edit, reactions, Block Kit blocks, rich attachments and file metadata. A field appears only when Slack returned it; oversized arrays are cut to whole items and listed in truncated when the result is partial. Look up a sender with get_user.",
       inputSchema: { channel: z.string(), ts: z.string() },
     },
     async ({ channel, ts }) => {
       try {
         return toolOk(await client.getMessage(channel, ts));
+      } catch (err) {
+        return toolError(err);
+      }
+    }
+  );
+  server.registerTool(
+    "get_user",
+    {
+      title: "Look up a Slack user",
+      description:
+        "Read a Slack user's profile by user ID, such as a message's user. status is active, deleted, or unknown when Slack has no such user visible to this app. Names are chosen by the user: they do not identify a principal or grant any authority. Needs the users:read scope.",
+      inputSchema: { user: z.string().describe("Slack user ID, e.g. from get_message's user") },
+    },
+    async ({ user }) => {
+      try {
+        return toolOk(await client.getUser(user));
       } catch (err) {
         return toolError(err);
       }

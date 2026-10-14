@@ -1046,3 +1046,27 @@ describe("Slack read MCP conversation discovery", () => {
     expect(list).not.toHaveBeenCalled();
   });
 });
+
+describe("Slack read MCP sender lookup", () => {
+  it("answers get_user with a profile and wraps errors as tool errors", async () => {
+    const info = vi.fn(async ({ user }: { user: string }) => {
+      if (user === "U1") {
+        return { ok: true, user: { id: "U1", name: "ada", deleted: false, profile: {} } };
+      }
+      throw Object.assign(new Error("An API error occurred: missing_scope"), {
+        data: { ok: false, error: "missing_scope" },
+      });
+    });
+    const slack = new SlackClient(TOKEN);
+    Object.defineProperty(slack, "historyWeb", { value: { users: { info } } });
+    const client = await connect(createSlackReadMcpServer(slack));
+
+    const found = await call(client, "get_user", { user: "U1" });
+    expect(found.isError).toBe(false);
+    expect(JSON.parse(found.text)).toEqual({ id: "U1", status: "active", name: "ada" });
+
+    const denied = await call(client, "get_user", { user: "U2" });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain("missing_scope");
+  });
+});
