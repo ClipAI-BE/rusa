@@ -1339,10 +1339,10 @@ export class ActorMesh {
    * Register an externally-created actor (the root) so the mesh can route
    * messages to it and the repository knows it exists. Idempotent on the record.
    *
-   * The wiring rebuilds `record` fresh on every boot : it carries the
-   * current config/session while the repository retains durable identity fields.
-   * Merge onto any existing record so the freshly configured fields win without
-   * changing stable creation metadata.
+   * Boot passes the configured actor's stored record as it stands, so nothing
+   * from config is merged in after its one-time import (#1002). The merge onto
+   * any existing record is kept for callers that supply a partial record; a
+   * field the record omits keeps its stored value.
    */
   adopt(record: ActorRecord, actor: MeshActor): void {
     this.assertSingleTopLevel(record);
@@ -1359,7 +1359,9 @@ export class ActorMesh {
    * can store several parentless actors now (#550), but that is not authority
    * to create them: until forest boot lands, adoption refuses a second one,
    * retired or not, as the dropped unique index did. {@link spawn} cannot make
-   * one at all, since it always resolves a parent.
+   * one at all, since it always resolves a parent. The configured-actor
+   * import's refusal of a reparented imported actor belongs to this guard and
+   * goes with it (#1002).
    */
   private assertSingleTopLevel(record: ActorRecord): void {
     if (record.parentId !== null) return;
@@ -1413,7 +1415,7 @@ export class ActorMesh {
    */
   reconcilePendingDeliveries(): void {
     if (!this.scheduledMessages) return;
-    for (const message of this.scheduledMessages.listMessageDeliveries()) {
+    for (const message of this.pendingScheduledMessages()) {
       const recipient = this.actors.get(message.toId);
       if (recipient?.status === "active") continue;
       try {
@@ -4307,10 +4309,7 @@ export class ActorMesh {
       if (!this.scheduledMessages) {
         throw new Error("Scheduled-message OS scheduler is not configured");
       }
-      if (
-        this.scheduledMessages.listMessageDeliveries().filter((message) => message.toId === toId)
-          .length >= 10
-      ) {
+      if (this.pendingScheduledMessages().filter((message) => message.toId === toId).length >= 10) {
         throw new Error(
           `Cannot schedule message: recipient ${toId} has reached the cap of 10 pending deliveries.`
         );
@@ -4835,7 +4834,7 @@ export class ActorMesh {
       }
     }
     const messages: MessageRetirementBlocker[] = [];
-    for (const message of this.scheduledMessages?.listMessageDeliveries() ?? []) {
+    for (const message of this.pendingScheduledMessages()) {
       const incoming = subtree.has(message.toId);
       const outgoing = subtree.has(message.fromId);
       if (!incoming && !outgoing) continue;
@@ -4886,9 +4885,7 @@ export class ActorMesh {
     reason?: string
   ): { messageId: string; fromId: string; toId: string; deliverAt: string } {
     by = this.resolveThreadId(by);
-    const message = this.scheduledMessages
-      ?.listMessageDeliveries()
-      .find((entry) => entry.id === messageId);
+    const message = this.pendingScheduledMessages().find((entry) => entry.id === messageId);
     if (!message) {
       throw new Error(
         `unknown pending message id: ${messageId} — it may have already been delivered or cancelled`
@@ -5838,6 +5835,11 @@ export class ActorMesh {
   }
 
   deliverScheduledMessage(scheduled: ScheduledMessage): void {
+    scheduled = {
+      ...scheduled,
+      fromId: this.resolveThreadId(scheduled.fromId),
+      toId: this.resolveThreadId(scheduled.toId),
+    };
     const { id: messageId, toId } = scheduled;
     // Heal the only cross-system crash window: the host job is installed
     // before acceptance history is committed so a failed DB transaction can
@@ -5881,6 +5883,14 @@ export class ActorMesh {
     target.requestRun();
   }
 
+  private pendingScheduledMessages(): ScheduledMessage[] {
+    return (this.scheduledMessages?.listMessageDeliveries() ?? []).map((message) => ({
+      ...message,
+      fromId: this.resolveThreadId(message.fromId),
+      toId: this.resolveThreadId(message.toId),
+    }));
+  }
+
   /**
    * Scheduled messages visible to an actor, used by the MCP projection.
    *
@@ -5895,7 +5905,8 @@ export class ActorMesh {
     deliverAt: string;
     body: string;
   }> {
-    return (this.scheduledMessages?.listMessageDeliveries() ?? [])
+    actorId = this.resolveThreadId(actorId);
+    return this.pendingScheduledMessages()
       .filter((message) => message.fromId === actorId || message.toId === actorId)
       .map((message) => ({
         messageId: message.id,
