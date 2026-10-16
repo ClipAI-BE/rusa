@@ -72,8 +72,7 @@ The rest of #808 remains open. A production adapter needs the following evidence
    429, 5xx, stream failure, cancellation and timeout.
 5. Prove process cleanup, yield, restart and model-switch portable continuity with
    production supervisor integration. The synthetic subprocess tests prove direct-child
-   closure after settlement, EOF, malformed output, deadline and startup cancellation,
-   plus fresh prompt delivery across two processes. They do not prove descendant cleanup,
+   closure after settlement and EOF before settlement. They do not prove descendant cleanup,
    sandbox or filesystem isolation, in-flight cancellation or real harness continuity.
 6. After operator provisioning and routing/data-policy review, run the separate
    capped synthetic smoke test. Record the executable version, adapter head,
@@ -96,7 +95,10 @@ The subprocess fixture launches only the current Node executable with an empty
 environment and a synthetic RPC peer. It never loads Pi or inference credentials.
 Its test-only host writes through stdin callbacks, feeds stdout bytes into the
 protocol decoder, drops stderr, applies a deadline, kills the detached process
-group on close and awaits Node's `close` event before returning. The peer stays
-alive after settlement so cleanup is exercised. Rusa's current `runSubprocess`
+group on close and awaits Node's `close` event before returning. The two cases
+assert successful settlement and the exact EOF-before-settlement error.
+Each has a 10 s test timeout around a 3 s fallback deadline, so a missing EOF
+listener fails with the deadline reason. The peer stays alive after settlement
+and after closing stdout so direct-child cleanup is exercised. Rusa's current `runSubprocess`
 ignores stdin; duplex support and sandbox reuse remain production work rather than
 being replaced by this fixture host.

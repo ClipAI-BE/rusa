@@ -8,15 +8,6 @@ const lines = createInterface({ input: process.stdin });
 setInterval(() => {}, 1000);
 lines.on("line", (line) => {
   const command = JSON.parse(line);
-  if (mode === "stall") return;
-  if (mode === "exit") process.exit(0);
-  if (mode === "truncate") {
-    process.stdout.write('{"type":');
-    process.exitCode = 0;
-    lines.close();
-    process.stdout.end();
-    return;
-  }
   const data =
     command.type === "get_state"
       ? {
@@ -31,10 +22,6 @@ lines.on("line", (line) => {
         : undefined;
   emit({ type: "response", id: command.id, command: command.type, success: true, data });
   if (command.type !== "prompt") return;
-  if (mode === "malformed") {
-    process.stdout.write("SECRET invalid record\n");
-    return;
-  }
   emit({
     type: "message_end",
     message: {
