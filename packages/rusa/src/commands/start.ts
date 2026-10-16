@@ -1827,6 +1827,7 @@ async function composeStart(
     config,
     workersDir,
     scrapeStore: quotaScrapesStore,
+    logger: log,
   });
   let webhookSilenceDetector: WebhookSilenceDetector | null = null;
   const servers: Record<string, () => McpServer> = {
