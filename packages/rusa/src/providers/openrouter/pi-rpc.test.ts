@@ -1,43 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { PiRpcDecoder, PiRpcInvocation, type PiRpcTransport } from "./pi-rpc.js";
-
-describe("Pi strict JSONL framing", () => {
-  it("preserves split UTF-8, CRLF and literal Unicode separators", () => {
-    const records: unknown[] = [];
-    const decoder = new PiRpcDecoder((record) => records.push(record));
-    const data = Buffer.from('{"type":"event","text":"🧠\u2028one\u2029two"}\r\n');
-    for (const byte of data) decoder.push(Buffer.from([byte]));
-    decoder.end();
-    expect(records).toEqual([{ type: "event", text: "🧠\u2028one\u2029two" }]);
-  });
-
-  it.each([
-    "not-json\n",
-    "[]\n",
-    "null\n",
-    "{}\n",
-    "\n",
-  ])("rejects malformed record %j without echoing input", (line) => {
-    const decoder = new PiRpcDecoder(() => {});
-    expect(() => decoder.push(Buffer.from(line))).toThrow("Invalid Pi RPC record");
-  });
-
-  it("bounds each record across chunks and accepts multiple records per chunk", () => {
-    const receive = vi.fn();
-    const decoder = new PiRpcDecoder(receive, 20);
-    decoder.push(Buffer.from('{"type":"a"}\n{"type":"b"}\n'));
-    expect(receive).toHaveBeenCalledTimes(2);
-    decoder.push(Buffer.from("12345678901234567890"));
-    expect(() => decoder.push(Buffer.from("x"))).toThrow("record limit exceeded");
-  });
-
-  it("fails on truncated records, even if the JSON is otherwise complete", () => {
-    const decoder = new PiRpcDecoder(() => {});
-    decoder.push(Buffer.from('{"type":"a"}'));
-    expect(() => decoder.end()).toThrow("Truncated");
-  });
-});
+import { PiRpcInvocation, type PiRpcTransport } from "./pi-rpc.js";
 
 type WireRecord = Record<string, unknown>;
 const model = "vendor/fixed-model";
@@ -54,6 +17,8 @@ function fixture(
   options: {
     state?: WireRecord;
     levels?: string[];
+    effort?: string | null;
+    afterResponse?: (command: WireRecord) => Promise<void>;
     disposition?: string;
     reject?: string;
     beforePromptResponse?: (invocation: PiRpcInvocation) => void;
@@ -78,7 +43,7 @@ function fixture(
             : command.type === "prompt"
               ? { disposition: options.disposition ?? "started" }
               : undefined;
-      invocation.receive({
+      wire(invocation, {
         type: "response",
         id: command.id,
         command: command.type,
@@ -86,20 +51,25 @@ function fixture(
         data,
         error: "SECRET provider diagnostic",
       });
+      await options.afterResponse?.(command);
     }),
   };
   invocation = new PiRpcInvocation(
     transport,
     model,
-    "high",
+    options.effort === null ? undefined : (options.effort ?? "high"),
     options.maxOutputBytes,
     options.maxRequests
   );
   return { invocation, transport, commands };
 }
 
+function wire(invocation: PiRpcInvocation, record: WireRecord) {
+  invocation.acceptStdout(Buffer.from(`${JSON.stringify(record)}\n`));
+}
+
 function assistant(invocation: PiRpcInvocation, overrides: WireRecord = {}) {
-  invocation.receive({
+  wire(invocation, {
     type: "message_end",
     message: {
       role: "assistant",
@@ -125,17 +95,18 @@ describe("Pi RPC portable invocation spike", () => {
     const finished = vi.fn();
     void result.then(finished);
     assistant(f.invocation);
-    f.invocation.receive({ type: "agent_end", willRetry: false });
+    wire(f.invocation, { type: "agent_end", willRetry: false });
     await Promise.resolve();
     expect(finished).not.toHaveBeenCalled();
     expect(f.transport.close).not.toHaveBeenCalled();
-    f.invocation.receive({ type: "agent_settled" });
+    wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({ success: true, output: "OK" });
     expect(f.transport.close).toHaveBeenCalledOnce();
     expect(f.commands.map((c) => c.type)).toEqual([
       "get_state",
       "get_available_thinking_levels",
       "set_auto_retry",
+      "set_auto_compaction",
       "prompt",
     ]);
   });
@@ -144,7 +115,7 @@ describe("Pi RPC portable invocation spike", () => {
     const f = fixture({
       beforePromptResponse(invocation) {
         assistant(invocation);
-        invocation.receive({ type: "agent_settled" });
+        wire(invocation, { type: "agent_settled" });
       },
     });
     expect(await f.invocation.run("task")).toMatchObject({ success: true });
@@ -180,6 +151,7 @@ describe("Pi RPC portable invocation spike", () => {
     "get_state",
     "get_available_thinking_levels",
     "set_auto_retry",
+    "set_auto_compaction",
     "prompt",
   ])("reports %s rejection without retaining diagnostics", async (reject) => {
     const f = fixture({ reject });
@@ -192,7 +164,7 @@ describe("Pi RPC portable invocation spike", () => {
     const f = fixture();
     const { result } = await start(f);
     assistant(f.invocation, { stopReason });
-    f.invocation.receive({ type: "agent_settled" });
+    wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({ success: false });
   });
 
@@ -200,18 +172,18 @@ describe("Pi RPC portable invocation spike", () => {
     const f = fixture();
     const { result } = await start(f);
     assistant(f.invocation, { model: "vendor/other" });
-    f.invocation.receive({ type: "agent_settled" });
+    wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({ success: false, reason: "Pi reported a different model" });
   });
 
   it("retains each completed request once, with missing usage and model unknown", async () => {
     const f = fixture();
     const { result } = await start(f);
-    f.invocation.receive({ type: "message_update", usage: { totalTokens: 10 } });
+    wire(f.invocation, { type: "message_update", usage: { totalTokens: 10 } });
     assistant(f.invocation, { usage: { totalTokens: 25, cost: { total: 0.01 } } });
-    f.invocation.receive({ type: "turn_end", message: {} });
+    wire(f.invocation, { type: "turn_end", message: {} });
     assistant(f.invocation, { usage: undefined, model: undefined });
-    f.invocation.receive({ type: "agent_settled" });
+    wire(f.invocation, { type: "agent_settled" });
     const outcome = await result;
     expect(outcome.requests).toEqual([
       {
@@ -247,20 +219,19 @@ describe("Pi RPC portable invocation spike", () => {
     expect(JSON.stringify(outcome)).not.toContain("SECRET");
   });
 
-  it("fails when stdout ends before settlement", async () => {
+  it.each([
+    "",
+    '{"type":"agent_settled"}',
+  ])("fails premature EOF with partial record %j", async (partial) => {
     const f = fixture();
     const { result } = await start(f);
     assistant(f.invocation);
+    f.invocation.acceptStdout(Buffer.from(partial));
     f.invocation.endStdout();
-    expect(await result).toMatchObject({ success: false });
-  });
-
-  it("rejects truncated stdout after acceptance", async () => {
-    const f = fixture();
-    const { result } = await start(f);
-    f.invocation.acceptStdout(Buffer.from('{"type":"agent_settled"}'));
-    f.invocation.endStdout();
-    expect(await result).toMatchObject({ success: false, reason: "Truncated Pi RPC output" });
+    expect(await result).toMatchObject({
+      success: false,
+      reason: partial ? "Truncated Pi RPC output" : "Pi subprocess ended before settlement",
+    });
   });
 
   it("bounds output independently of wire record size", async () => {
@@ -281,9 +252,10 @@ describe("Pi RPC portable invocation spike", () => {
   it("clears queued work, aborts and closes exactly once on cancellation", async () => {
     const f = fixture();
     const { result } = await start(f);
-    f.invocation.cancel();
-    f.invocation.cancel();
-    f.invocation.receive({ type: "agent_settled" });
+    const cancelled = f.invocation.cancel();
+    expect(f.invocation.cancel()).toBe(cancelled);
+    await cancelled;
+    wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
     expect(f.commands.slice(-2).map((c) => c.type)).toEqual(["clear_queue", "abort"]);
     expect(f.transport.close).toHaveBeenCalledOnce();
@@ -293,7 +265,7 @@ describe("Pi RPC portable invocation spike", () => {
   it("fails on an uncorrelated response rather than leaving an in-flight command pending", async () => {
     const f = fixture();
     const { result } = await start(f);
-    f.invocation.receive({ type: "response", command: "prompt", id: "unknown", success: true });
+    wire(f.invocation, { type: "response", command: "prompt", id: "unknown", success: true });
     expect(await result).toMatchObject({ success: false, reason: "Unexpected Pi RPC response" });
   });
 
@@ -315,7 +287,7 @@ describe("Pi RPC portable invocation spike", () => {
     const transport: PiRpcTransport = { write: vi.fn(async () => {}), close: vi.fn() };
     const invocation = new PiRpcInvocation(transport, model, "high");
     const result = invocation.run("task");
-    invocation.cancel();
+    await invocation.cancel();
     expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
     // A deferred startup write must never reach a transport already closed by cancel.
     expect(transport.write).toHaveBeenCalledTimes(2);
@@ -330,7 +302,7 @@ describe("Pi RPC portable invocation spike", () => {
     };
     const invocation = new PiRpcInvocation(transport, model, "high");
     const result = invocation.run("task");
-    invocation.cancel();
+    await invocation.cancel();
     expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
     expect(transport.close).toHaveBeenCalledOnce();
   });
@@ -338,10 +310,168 @@ describe("Pi RPC portable invocation spike", () => {
   it("does not treat empty settlement as completed work", async () => {
     const f = fixture();
     const { result } = await start(f);
-    f.invocation.receive({ type: "agent_settled" });
+    wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({
       success: false,
       reason: "Pi returned no assistant message",
+    });
+  });
+  it.each([
+    "get_state",
+    "prompt",
+  ])("host failure settles despite an acknowledged stalled %s write", async (blocked) => {
+    let release!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = fixture({
+      afterResponse: async (command) => {
+        if (command.type === blocked) await drained;
+      },
+    });
+    const result = f.invocation.run("task");
+    await vi.waitFor(() => expect(f.commands.some((c) => c.type === blocked)).toBe(true));
+    f.invocation.fail("deadline");
+    await expect(result).resolves.toMatchObject({ success: false, reason: "deadline" });
+    expect(f.transport.close).toHaveBeenCalledOnce();
+    release();
+  });
+
+  it("drains an acknowledged prompt write before cancellation commands", async () => {
+    let release!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = fixture({
+      afterResponse: async (command) => {
+        if (command.type === "prompt") await drained;
+      },
+    });
+    const { result } = await start(f);
+    const cancelled = f.invocation.cancel();
+    wire(f.invocation, { type: "agent_settled" });
+    await Promise.resolve();
+    expect(f.commands.at(-1)?.type).toBe("prompt");
+    expect(f.transport.close).not.toHaveBeenCalled();
+    release();
+    await cancelled;
+    expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
+    expect(f.commands.slice(-2).map((c) => c.type)).toEqual(["clear_queue", "abort"]);
+    expect(f.transport.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    false,
+    true,
+  ])("drains cancellation in order, with forced deadline %s", async (deadline) => {
+    const f = fixture();
+    const { result } = await start(f);
+    let release!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: string[] = [];
+    f.transport.write = vi.fn(async (line) => {
+      const type = JSON.parse(line).type as string;
+      events.push(type);
+      if (type === "clear_queue") await drained;
+      events.push(`${type}:drained`);
+    });
+    f.transport.close = vi.fn(() => {
+      events.push("close");
+    });
+    const cancelled = f.invocation.cancel();
+    await vi.waitFor(() => expect(events).toEqual(["clear_queue"]));
+    if (deadline) {
+      f.invocation.fail("deadline");
+      expect(await result).toMatchObject({ success: false, reason: "deadline" });
+      expect(events).toEqual(["clear_queue", "close"]);
+    }
+    release();
+    await cancelled;
+    expect(await result).toMatchObject({ success: false });
+    expect(events).toEqual(
+      deadline
+        ? ["clear_queue", "close", "clear_queue:drained"]
+        : ["clear_queue", "clear_queue:drained", "abort", "abort:drained", "close"]
+    );
+  });
+
+  it.each([
+    "toolUse",
+    "length",
+    "pending",
+    undefined,
+  ])("rejects final stop reason %s", async (stopReason) => {
+    const f = fixture();
+    const { result } = await start(f);
+    assistant(f.invocation, { stopReason });
+    wire(f.invocation, { type: "agent_settled" });
+    expect(await result).toMatchObject({ success: false });
+  });
+
+  it.each([
+    { type: "turn_start" },
+    { type: "extension_error", error: "SECRET" },
+    { type: "message_update", assistantMessageEvent: { type: "error", error: "SECRET" } },
+    { type: "message_start", message: { role: "assistant" } },
+    { type: "compaction_start" },
+    { type: "compaction_end", aborted: true },
+    { type: "auto_retry_end", success: false },
+  ])("rejects failure or incomplete continuation %#", async (event) => {
+    const f = fixture();
+    const { result } = await start(f);
+    assistant(f.invocation);
+    wire(f.invocation, event);
+    wire(f.invocation, { type: "agent_settled" });
+    const outcome = await result;
+    expect(outcome.success).toBe(false);
+    expect(JSON.stringify(outcome)).not.toContain("SECRET");
+  });
+
+  it("returns only final assistant text while retaining all turn usage", async () => {
+    const f = fixture({ effort: null, state: { ...state, thinkingLevel: "off" } });
+    const { result } = await start(f);
+    assistant(f.invocation, {
+      stopReason: "toolUse",
+      content: [{ type: "text", text: "Working" }],
+    });
+    assistant(f.invocation, { content: [{ type: "text", text: "🧠\u2028one\u2029two" }] });
+    wire(f.invocation, { type: "agent_settled" });
+    expect(await result).toMatchObject({
+      success: true,
+      output: "🧠\u2028one\u2029two",
+      requests: [expect.any(Object), expect.any(Object)],
+    });
+    expect(f.commands.some((c) => c.type === "get_available_thinking_levels")).toBe(false);
+  });
+
+  it("frames split UTF-8, CRLF, and multiple records through the invocation", async () => {
+    const f = fixture();
+    const { result } = await start(f);
+    const data = Buffer.from(
+      `${JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "🧠\u2028one\u2029two" }],
+        },
+      })}\r\n{"type":"agent_end"}\n`
+    );
+    for (const byte of data) f.invocation.acceptStdout(Buffer.from([byte]));
+    wire(f.invocation, { type: "agent_settled" });
+    expect(await result).toMatchObject({ success: true, output: "🧠\u2028one\u2029two" });
+  });
+
+  it("bounds records across chunks before parsing", async () => {
+    const f = fixture();
+    const { result } = await start(f);
+    f.invocation.acceptStdout(Buffer.alloc(1024 * 1024, 32));
+    f.invocation.acceptStdout(Buffer.from("x"));
+    expect(await result).toMatchObject({
+      success: false,
+      reason: "Invalid or oversized Pi RPC output",
     });
   });
 });

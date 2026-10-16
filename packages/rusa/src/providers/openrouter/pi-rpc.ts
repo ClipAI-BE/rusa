@@ -18,8 +18,8 @@ function object(value: unknown): RecordValue {
  * Limits apply to bytes on the wire, before parsing or retaining a record.
  * Protocol errors intentionally omit the input, which may contain secrets.
  */
-export class PiRpcDecoder {
-  private decoder = new StringDecoder("utf8");
+class PiRpcDecoder {
+  private readonly decoder = new StringDecoder("utf8");
   private pending = "";
   private bytes = 0;
   private ended = false;
@@ -47,7 +47,6 @@ export class PiRpcDecoder {
       const line = this.pending.endsWith("\r") ? this.pending.slice(0, -1) : this.pending;
       this.pending = "";
       this.bytes = 0;
-      this.decoder = new StringDecoder("utf8");
       let record: RecordValue;
       try {
         record = object(JSON.parse(line));
@@ -70,7 +69,7 @@ export class PiRpcDecoder {
 export interface PiRpcTransport {
   /** Write one complete record, honoring stdin backpressure. */
   write(record: string): Promise<void>;
-  /** Close stdin after settlement, then reap the supervised process group. */
+  /** Close stdin and reap the supervised process group, even after a stalled write. */
   close(): void;
 }
 
@@ -98,19 +97,22 @@ export class PiRpcInvocation {
     { command: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   private sequence = 0;
-  private phase: "new" | "preparing" | "running" | "done" = "new";
+  private phase: "new" | "preparing" | "running" | "cancelling" | "done" = "new";
   private settled = false;
   private accepted = false;
   private failure?: string;
   private output = "";
   private requests: PiUsageObservation[] = [];
   private finishRun?: (outcome: PiRpcOutcome) => void;
-  readonly decoder: PiRpcDecoder;
+  private readonly decoder: PiRpcDecoder;
+  private writeTail: Promise<void> = Promise.resolve();
+  private cancellation?: Promise<void>;
+  private finalStopReason?: unknown;
 
   constructor(
     private readonly transport: PiRpcTransport,
     private readonly model: string,
-    private readonly effort: string,
+    private readonly effort?: string,
     private readonly maxOutputBytes = 1024 * 1024,
     private readonly maxRequests = 1000
   ) {
@@ -150,6 +152,11 @@ export class PiRpcInvocation {
     const result = new Promise<PiRpcOutcome>((resolve) => {
       this.finishRun = resolve;
     });
+    void this.prepare(prompt);
+    return result;
+  }
+
+  private async prepare(prompt: string): Promise<void> {
     try {
       // Read back exact identity: CLI model selection is fuzzy and thinking is clamped.
       const state = object(await this.command("get_state"));
@@ -157,7 +164,7 @@ export class PiRpcInvocation {
       if (model.provider !== "openrouter" || model.id !== this.model) {
         throw new PiAdmissionError("Pi resolved a different provider or model");
       }
-      if (state.thinkingLevel !== this.effort)
+      if (this.effort !== undefined && state.thinkingLevel !== this.effort)
         throw new PiAdmissionError("Pi changed requested effort");
       if (
         state.isStreaming !== false ||
@@ -168,11 +175,16 @@ export class PiRpcInvocation {
       ) {
         throw new PiAdmissionError("Pi session is not fresh and idle");
       }
-      const levels = object(await this.command("get_available_thinking_levels"));
-      if (!Array.isArray(levels.levels) || !levels.levels.includes(this.effort)) {
-        throw new PiAdmissionError("Pi does not support requested effort");
+      if (this.effort !== undefined) {
+        // get_state exposes raw agent state; capability validation is separate.
+        const levels = object(await this.command("get_available_thinking_levels"));
+        if (!Array.isArray(levels.levels) || !levels.levels.includes(this.effort)) {
+          throw new PiAdmissionError("Pi does not support requested effort");
+        }
       }
       await this.command("set_auto_retry", { enabled: false });
+      await this.command("set_auto_compaction", { enabled: false });
+      if (this.phase !== "preparing") return;
       // Listen before sending: a fast fixture/child can settle before prompt's response.
       this.phase = "running";
       const response = object(await this.command("prompt", { message: prompt }));
@@ -182,13 +194,23 @@ export class PiRpcInvocation {
       this.accepted = true;
       this.maybeFinish();
     } catch (error) {
+      if (this.phase === "cancelling") return;
       // Command failure text is untrusted and may contain credentials or prompt data.
       this.finish(
         false,
         error instanceof PiAdmissionError ? error.message : "Pi RPC preparation or prompt rejected"
       );
     }
-    return result;
+  }
+
+  private write(record: string, cancelling = false): Promise<void> {
+    const sent = this.writeTail.then(() => {
+      if (this.phase === "done" || (this.phase === "cancelling" && !cancelling))
+        throw new Error("Pi RPC invocation ended");
+      return this.transport.write(record);
+    });
+    this.writeTail = sent.catch(() => {});
+    return sent;
   }
 
   private async command(type: string, fields: RecordValue = {}): Promise<unknown> {
@@ -198,10 +220,7 @@ export class PiRpcInvocation {
       this.pending.set(id, { command: type, resolve, reject });
     });
     // Attach a rejection handler before a synchronous fake/transport can fail.
-    const sent = Promise.resolve().then(() => {
-      if (this.phase === "done") throw new Error("Pi RPC invocation ended");
-      return this.transport.write(`${JSON.stringify({ ...fields, type, id })}\n`);
-    });
+    const sent = this.write(`${JSON.stringify({ ...fields, type, id })}\n`);
     try {
       const [, value] = await Promise.all([sent, response]);
       return value;
@@ -210,7 +229,7 @@ export class PiRpcInvocation {
     }
   }
 
-  receive(record: RecordValue): void {
+  private receive(record: RecordValue): void {
     try {
       this.handleRecord(record);
     } catch {
@@ -219,7 +238,7 @@ export class PiRpcInvocation {
   }
 
   private handleRecord(record: RecordValue): void {
-    if (this.phase === "done") return;
+    if (this.phase === "done" || this.phase === "cancelling") return;
     if (record.type === "response") {
       const request = typeof record.id === "string" ? this.pending.get(record.id) : undefined;
       if (!request || record.command !== request.command) {
@@ -234,6 +253,29 @@ export class PiRpcInvocation {
     if (this.phase !== "running") {
       this.finish(false, "Pi emitted work before prompt admission");
       return;
+    }
+    if (
+      record.type === "extension_error" ||
+      (record.type === "message_update" &&
+        record.assistantMessageEvent !== undefined &&
+        object(record.assistantMessageEvent).type === "error")
+    ) {
+      this.failure = "Pi reported an execution error";
+    }
+    if (
+      record.type === "compaction_start" ||
+      record.type === "compaction_end" ||
+      record.type === "auto_retry_start" ||
+      record.type === "auto_retry_end"
+    ) {
+      this.finish(false, "Pi emitted disabled automatic work");
+      return;
+    }
+    if (
+      record.type === "turn_start" ||
+      (record.type === "message_start" && object(record.message).role === "assistant")
+    ) {
+      this.finalStopReason = undefined;
     }
     if (record.type === "message_end") {
       const message = object(record.message);
@@ -254,6 +296,8 @@ export class PiRpcInvocation {
         reportedModel,
         usage: message.usage === undefined ? undefined : object(message.usage),
       });
+      this.finalStopReason = message.stopReason;
+      this.output = "";
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         this.failure = "Pi reported a provider error or abort";
       }
@@ -282,10 +326,15 @@ export class PiRpcInvocation {
   }
 
   private maybeFinish(): void {
-    if (!this.accepted || !this.settled) return;
+    if (this.phase !== "running" || !this.accepted || !this.settled) return;
     this.finish(
-      !this.failure && this.requests.length > 0,
-      this.failure ?? (this.requests.length === 0 ? "Pi returned no assistant message" : undefined)
+      !this.failure && this.finalStopReason === "stop",
+      this.failure ??
+        (this.requests.length === 0
+          ? "Pi returned no assistant message"
+          : this.finalStopReason !== "stop"
+            ? "Pi returned no final completed answer"
+            : undefined)
     );
   }
 
@@ -294,17 +343,24 @@ export class PiRpcInvocation {
     this.finish(false, reason);
   }
 
-  /** Host must still kill/reap the process group if the cooperative abort stalls. */
-  cancel(): void {
-    if (this.phase === "done") return;
-    for (const type of ["clear_queue", "abort"]) {
+  /** Drain queued writes, then clear queues before aborting. The host must call
+   * fail() at its deadline if any write stalls; fail() always closes immediately.
+   */
+  cancel(): Promise<void> {
+    if (this.cancellation) return this.cancellation;
+    if (this.phase === "done") return Promise.resolve();
+    this.phase = "cancelling";
+    this.cancellation = (async () => {
       try {
-        void this.transport.write(`${JSON.stringify({ type })}\n`).catch(() => {});
+        for (const type of ["clear_queue", "abort"]) {
+          await this.write(`${JSON.stringify({ type })}\n`, true);
+        }
       } catch {
-        // Cooperative abort is best effort. The host still owns forced cleanup.
+        // Forced cleanup also covers failed cooperative cancellation writes.
       }
-    }
-    this.finish(false, "Pi invocation cancelled");
+      this.finish(false, "Pi invocation cancelled");
+    })();
+    return this.cancellation;
   }
 
   private finish(success: boolean, reason?: string): void {
