@@ -36,23 +36,18 @@ and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a
   Raw usage is a harness report. It is not a measurement of OpenRouter billed
   cost. Missing reported model or usage stays unknown. Nothing writes accounting
   rows, estimates supplier identity or persists a new provider under another name.
-- Cancellation drains outstanding writes, then drains `clear_queue` before
-  sending and draining `abort`, then closes. Clearing the queue follows the pinned
-  abort contract, which permits queued continuation; it does not assert that this
-  single-prompt adapter enqueues work. `cancel()` is awaitable and idempotent.
-  Once cancellation begins, stdout bytes and EOF are ignored so they cannot
-  replace the cancellation outcome or interrupt command drain ordering. Usage
-  emitted during cancellation, including an aborted final message, is dropped;
-  observations retained before cancellation remain available. These observations
-  are incomplete and cannot establish total billed usage.
-  If any write stalls, the host must call `fail()` at its deadline to force cleanup.
-  Host failure settles `run()` immediately, including after an acknowledged but
-  undrained write. The host owns deadlines and process-group termination.
+- Cancellation immediately closes this one-shot invocation, including behind a
+  stalled write. `cancel()` is awaitable and idempotent. No cooperative abort
+  processing or grace period is assumed. Later stdout and EOF are ignored.
+  Observations retained before cancellation remain available; later usage is
+  dropped. These incomplete observations cannot establish total billed usage.
+  Host failure also settles `run()` immediately. The host owns deadlines and
+  process-group termination.
 
 `PiRpcTransport` is an injected boundary. Its writer must honor backpressure;
 its closer must close stdin and arrange process cleanup even during a stalled
-write. Normal writes are serialized through drain. Forced failure may close
-before drain, and cooperative cancellation may wait only until the host deadline. The fixtures implement
+write. Normal writes are serialized through drain. Failure and cancellation close
+without waiting for drain. The fixtures implement
 this interface in memory. They are synthetic protocol records, not captured
 evidence that the released Pi binary works with Rusa.
 
@@ -75,7 +70,7 @@ The rest of #808 remains open. A production adapter needs the following evidence
    reset-window pacing. Exercise real provider error translation for 401, 402,
    429, 5xx, stream failure, cancellation and timeout.
 5. Prove process cleanup, yield, restart and model-switch portable continuity with
-   subprocess fixtures. The protocol tests here prove cancellation commands, not
+   subprocess fixtures. The protocol tests here prove invocation settlement and close calls, not
    process-group termination or filesystem isolation.
 6. After operator provisioning and routing/data-policy review, run the separate
    capped synthetic smoke test. Record the executable version, adapter head,

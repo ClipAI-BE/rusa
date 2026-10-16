@@ -33,7 +33,6 @@ function fixture(
     write: vi.fn(async (line) => {
       const command = JSON.parse(line) as WireRecord;
       commands.push(command);
-      if (command.type === "clear_queue" || command.type === "abort") return;
       if (command.type === "prompt") options.beforePromptResponse?.(invocation);
       const data =
         command.type === "get_state"
@@ -249,7 +248,7 @@ describe("Pi RPC portable invocation spike", () => {
     expect(await result).toMatchObject({ success: false, requests: [expect.any(Object)] });
   });
 
-  it("clears queued work, aborts and closes exactly once on cancellation", async () => {
+  it("closes exactly once on cancellation without writing abort commands", async () => {
     const f = fixture();
     const { result } = await start(f);
     const cancelled = f.invocation.cancel();
@@ -257,7 +256,7 @@ describe("Pi RPC portable invocation spike", () => {
     await cancelled;
     wire(f.invocation, { type: "agent_settled" });
     expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
-    expect(f.commands.slice(-2).map((c) => c.type)).toEqual(["clear_queue", "abort"]);
+    expect(f.commands.some((c) => c.type === "clear_queue" || c.type === "abort")).toBe(false);
     expect(f.transport.close).toHaveBeenCalledOnce();
     await expect(f.invocation.run("again")).rejects.toThrow("already used");
   });
@@ -290,10 +289,10 @@ describe("Pi RPC portable invocation spike", () => {
     await invocation.cancel();
     expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
     // A deferred startup write must never reach a transport already closed by cancel.
-    expect(transport.write).toHaveBeenCalledTimes(2);
+    expect(transport.write).not.toHaveBeenCalled();
   });
 
-  it("still closes when cooperative abort writes throw synchronously", async () => {
+  it("cancels before a deferred throwing startup write", async () => {
     const transport: PiRpcTransport = {
       write: () => {
         throw new Error("closed");
@@ -337,7 +336,7 @@ describe("Pi RPC portable invocation spike", () => {
     release();
   });
 
-  it("drains an acknowledged prompt write before cancellation commands", async () => {
+  it("cancels immediately behind a stalled prompt write and ignores later stdout", async () => {
     let release!: () => void;
     const drained = new Promise<void>((resolve) => {
       release = resolve;
@@ -348,53 +347,34 @@ describe("Pi RPC portable invocation spike", () => {
       },
     });
     const { result } = await start(f);
-    const cancelled = f.invocation.cancel();
-    wire(f.invocation, { type: "agent_settled" });
-    await Promise.resolve();
-    expect(f.commands.at(-1)?.type).toBe("prompt");
-    expect(f.transport.close).not.toHaveBeenCalled();
-    release();
-    await cancelled;
-    expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
-    expect(f.commands.slice(-2).map((c) => c.type)).toEqual(["clear_queue", "abort"]);
+    assistant(f.invocation, { usage: { input: 7 } });
+    f.invocation.acceptStdout(Buffer.from('{"type":'));
+    await f.invocation.cancel();
+    f.invocation.endStdout();
+    f.invocation.acceptStdout(Buffer.from("invalid stdout\n"));
+    f.invocation.fail("later deadline");
+    expect(await result).toMatchObject({
+      success: false,
+      reason: "Pi invocation cancelled",
+      requests: [{ usage: { input: 7 } }],
+    });
     expect(f.transport.close).toHaveBeenCalledOnce();
+    expect(f.commands.at(-1)?.type).toBe("prompt");
+    release();
   });
 
   it.each([
-    false,
-    true,
-  ])("drains cancellation in order, with forced deadline %s", async (deadline) => {
-    const f = fixture();
-    const { result } = await start(f);
-    let release!: () => void;
-    const drained = new Promise<void>((resolve) => {
-      release = resolve;
+    undefined,
+    null,
+    42,
+    [],
+  ])("reports missing or malformed startup model %j as admission failure", async (selected) => {
+    const f = fixture({ state: { ...state, model: selected } });
+    expect(await f.invocation.run("task")).toMatchObject({
+      success: false,
+      reason: "Pi resolved a different provider or model",
     });
-    const events: string[] = [];
-    f.transport.write = vi.fn(async (line) => {
-      const type = JSON.parse(line).type as string;
-      events.push(type);
-      if (type === "clear_queue") await drained;
-      events.push(`${type}:drained`);
-    });
-    f.transport.close = vi.fn(() => {
-      events.push("close");
-    });
-    const cancelled = f.invocation.cancel();
-    await vi.waitFor(() => expect(events).toEqual(["clear_queue"]));
-    if (deadline) {
-      f.invocation.fail("deadline");
-      expect(await result).toMatchObject({ success: false, reason: "deadline" });
-      expect(events).toEqual(["clear_queue", "close"]);
-    }
-    release();
-    await cancelled;
-    expect(await result).toMatchObject({ success: false });
-    expect(events).toEqual(
-      deadline
-        ? ["clear_queue", "close", "clear_queue:drained"]
-        : ["clear_queue", "clear_queue:drained", "abort", "abort:drained", "close"]
-    );
+    expect(f.commands.map((c) => c.type)).toEqual(["get_state"]);
   });
 
   it.each([
@@ -474,36 +454,6 @@ describe("Pi RPC portable invocation spike", () => {
       reason: "Invalid or oversized Pi RPC output",
     });
   });
-  it.each([
-    "clear_queue",
-    "abort",
-  ])("preserves cancellation through stdout closure during %s drain", async (blocked) => {
-    const f = fixture();
-    const { result } = await start(f);
-    let release!: () => void;
-    const drained = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    f.transport.write = vi.fn(async (line) => {
-      if (JSON.parse(line).type === blocked) {
-        // A partial record can already be buffered when cancellation begins.
-        f.invocation.endStdout();
-        f.invocation.acceptStdout(Buffer.from("invalid stdout\n"));
-        await drained;
-      }
-    });
-    f.invocation.acceptStdout(Buffer.from('{"type":'));
-    const cancelled = f.invocation.cancel();
-    await vi.waitFor(() =>
-      expect(f.transport.write).toHaveBeenCalledWith(`${JSON.stringify({ type: blocked })}\n`)
-    );
-    expect(f.transport.close).not.toHaveBeenCalled();
-    release();
-    await cancelled;
-    expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
-    expect(f.transport.close).toHaveBeenCalledOnce();
-  });
-
   it.each([
     null,
     42,

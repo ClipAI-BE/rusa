@@ -96,7 +96,7 @@ export class PiRpcInvocation {
     { command: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   private sequence = 0;
-  private phase: "new" | "preparing" | "running" | "cancelling" | "done" = "new";
+  private phase: "new" | "preparing" | "running" | "done" = "new";
   private settled = false;
   private accepted = false;
   private failure?: string;
@@ -127,7 +127,7 @@ export class PiRpcInvocation {
   }
 
   acceptStdout(chunk: Buffer): void {
-    if (this.phase === "done" || this.phase === "cancelling") return;
+    if (this.phase === "done") return;
     try {
       this.decoder.push(chunk);
     } catch {
@@ -136,7 +136,7 @@ export class PiRpcInvocation {
   }
 
   endStdout(): void {
-    if (this.phase === "done" || this.phase === "cancelling") return;
+    if (this.phase === "done") return;
     try {
       this.decoder.end();
       this.fail();
@@ -159,7 +159,11 @@ export class PiRpcInvocation {
     try {
       // Read back exact identity: CLI model selection is fuzzy and thinking is clamped.
       const state = object(await this.command("get_state"));
-      const model = object(state.model);
+      const selected = state.model;
+      if (selected === null || typeof selected !== "object" || Array.isArray(selected)) {
+        throw new PiAdmissionError("Pi resolved a different provider or model");
+      }
+      const model = object(selected);
       if (model.provider !== "openrouter" || model.id !== this.model) {
         throw new PiAdmissionError("Pi resolved a different provider or model");
       }
@@ -193,7 +197,6 @@ export class PiRpcInvocation {
       this.accepted = true;
       this.maybeFinish();
     } catch (error) {
-      if (this.phase === "cancelling") return;
       // Command failure text is untrusted and may contain credentials or prompt data.
       this.finish(
         false,
@@ -202,10 +205,9 @@ export class PiRpcInvocation {
     }
   }
 
-  private write(record: string, cancelling = false): Promise<void> {
+  private write(record: string): Promise<void> {
     const sent = this.writeTail.then(() => {
-      if (this.phase === "done" || (this.phase === "cancelling" && !cancelling))
-        throw new Error("Pi RPC invocation ended");
+      if (this.phase === "done") throw new Error("Pi RPC invocation ended");
       return this.transport.write(record);
     });
     this.writeTail = sent.catch(() => {});
@@ -237,7 +239,7 @@ export class PiRpcInvocation {
   }
 
   private handleRecord(record: RecordValue): void {
-    if (this.phase === "done" || this.phase === "cancelling") return;
+    if (this.phase === "done") return;
     if (record.type === "response") {
       const request = typeof record.id === "string" ? this.pending.get(record.id) : undefined;
       if (!request || record.command !== request.command) {
@@ -342,23 +344,14 @@ export class PiRpcInvocation {
     this.finish(false, reason);
   }
 
-  /** Drain queued writes, then clear queues before aborting. The host must call
-   * fail() at its deadline if any write stalls; fail() always closes immediately.
+  /** End this one-shot invocation immediately, even behind a stalled write.
+   * The host owns process-group termination; no cooperative abort is assumed.
    */
   cancel(): Promise<void> {
-    if (this.cancellation) return this.cancellation;
-    if (this.phase === "done") return Promise.resolve();
-    this.phase = "cancelling";
-    this.cancellation = (async () => {
-      try {
-        for (const type of ["clear_queue", "abort"]) {
-          await this.write(`${JSON.stringify({ type })}\n`, true);
-        }
-      } catch {
-        // Forced cleanup also covers failed cooperative cancellation writes.
-      }
+    if (!this.cancellation) {
+      this.cancellation = Promise.resolve();
       this.finish(false, "Pi invocation cancelled");
-    })();
+    }
     return this.cancellation;
   }
 
