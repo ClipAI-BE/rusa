@@ -6,6 +6,7 @@ import { resolveContextSelection } from "../actor/context-selection.js";
 import type { HaltState } from "../actor/halt-switch.js";
 import { generateHandle } from "../actor/handle-generator.js";
 import { inboxEntryObligationRefs } from "../actor/inbox-focus.js";
+import type { OperatorActorControl } from "../actor/operator-actor-control.js";
 import type { PortableBriefStore, PortableContextStore } from "../actor/portable-context-state.js";
 import type { RootControlPrincipal, RootControlService } from "../actor/root-control.js";
 import { summarizeCharter } from "../actor/worker-prompt.js";
@@ -107,6 +108,8 @@ export interface DashboardDataDeps {
   chatRoom?: Pick<ChatRoomService, "participants">;
   /** Root-authorized commands exposed to trusted dashboard operators. */
   rootControl?: RootControlService;
+  /** The authenticated operator's actor-forest boundary (#1003). */
+  operatorActors?: OperatorActorControl;
   /**
    * Read-only view of the mesh's emergency-brake state (the HALT sentinel),
    * surfaced as the top-level `halted` flag on `/api/mesh/threads`. Optional:
@@ -1157,12 +1160,62 @@ export async function handleMeshApiRequest(
       return true;
     }
 
-    // POST /api/mesh/actors/:id/reparent — operator-root reorganization.
+    // POST /api/mesh/actors/:id/obligations-admin — the authenticated
+    // operator's explicit, durable cross-owner obligation binding (#1003).
+    // No actor-facing capability grant may create or revoke this reach.
+    const obligationsAdminMatch = pathname.match(
+      /^\/api\/mesh\/actors\/([^/]+)\/obligations-admin$/
+    );
+    if (obligationsAdminMatch) {
+      const operatorActors = deps?.operatorActors;
+      if (!operatorActors) {
+        sendJson(res, 503, { error: "operator actor control unavailable" });
+        return true;
+      }
+      const actorId = decodeURIComponent(obligationsAdminMatch[1]);
+      readBody(req)
+        .then((bodyStr) => {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(bodyStr);
+          } catch {
+            sendJson(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          if (
+            typeof parsed !== "object" ||
+            parsed === null ||
+            Array.isArray(parsed) ||
+            typeof (parsed as Record<string, unknown>).enabled !== "boolean"
+          ) {
+            sendJson(res, 400, { error: "enabled must be a boolean" });
+            return;
+          }
+          const principal = requireOperatorPrincipal(req, res, deps);
+          if (!principal) return;
+          try {
+            const binding = operatorActors.setObligationsAdmin(
+              actorId,
+              (parsed as Record<string, boolean>).enabled,
+              principal
+            );
+            sendJson(res, 200, { ok: true, binding });
+          } catch (err) {
+            sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+          }
+        })
+        .catch((err) => sendJson(res, 500, { error: String(err) }));
+      return true;
+    }
+
+    // POST /api/mesh/actors/:id/reparent — the authenticated operator's
+    // boundary for reorganizing actor forests (#1003). `parentId: null`
+    // detaches the actor to top level; every decided attempt is audited.
     const reparentActorMatch = pathname.match(/^\/api\/mesh\/actors\/([^/]+)\/reparent$/);
     if (reparentActorMatch) {
-      const rootControl = deps?.rootControl;
-      if (!rootControl) {
-        sendJson(res, 503, { error: "root control unavailable" });
+      const operatorActors = deps?.operatorActors;
+      if (!operatorActors) {
+        sendJson(res, 503, { error: "operator actor control unavailable" });
         return true;
       }
       const actorId = decodeURIComponent(reparentActorMatch[1]);
@@ -1179,15 +1232,17 @@ export async function handleMeshApiRequest(
             sendJson(res, 400, { error: "Missing or invalid parentId" });
             return;
           }
+          // Detaching is explicit: an absent or blank parentId is a malformed
+          // request, never a request for top level.
           const parentId = (parsed as Record<string, unknown>).parentId;
-          if (typeof parentId !== "string" || !parentId.trim()) {
-            sendJson(res, 400, { error: "parentId is required" });
+          if (parentId !== null && (typeof parentId !== "string" || !parentId.trim())) {
+            sendJson(res, 400, { error: "parentId is required (null detaches to top level)" });
             return;
           }
           const principal = requireOperatorPrincipal(req, res, deps);
           if (!principal) return;
           try {
-            rootControl.reparentChild(actorId, parentId.trim(), principal);
+            operatorActors.reparent(actorId, parentId === null ? null : parentId.trim(), principal);
             sendJson(res, 200, { ok: true });
           } catch (err) {
             sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
@@ -2143,8 +2198,8 @@ export async function handleMeshApiRequest(
     return true;
   }
 
-  // GET /api/mesh/chat-room — the Chat Room roster: root first, then added
-  // actors in the order they joined. Read-only: root manages membership.
+  // GET /api/mesh/chat-room — the Chat Room roster: explicitly added actors in
+  // the order they joined. Read-only: a room-admin holder manages membership.
   if (pathname === "/api/mesh/chat-room") {
     if (!deps.chatRoom) {
       sendJson(res, 503, { error: "chat room unavailable (no live mesh bound)" });
