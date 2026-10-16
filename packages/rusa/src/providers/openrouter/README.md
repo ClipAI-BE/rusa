@@ -25,7 +25,8 @@ and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a
   settle the invocation. Wait for `agent_settled`, including when it arrives
   before the prompt response. Rejected, queued or extension-handled prompts fail.
 - Provider errors, aborts, reported model changes, malformed records and a stream
-  ending before settlement fail. Success requires the final assistant message
+  ending before settlement fail. A supplied model must match exactly, including its
+  string type. The first recorded execution failure is retained. Success requires the final assistant message
   to end with `stop`; tool-use, length-limited and unfinished turns fail. Only
   the final assistant message supplies output text. Extension/stream errors and
   unexpected retry/compaction events fail. Command diagnostics are omitted.
@@ -38,6 +39,8 @@ and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a
   sending and draining `abort`, then closes. Clearing the queue follows the pinned
   abort contract, which permits queued continuation; it does not assert that this
   single-prompt adapter enqueues work. `cancel()` is awaitable and idempotent.
+  Once cancellation begins, stdout bytes and EOF are ignored so they cannot
+  replace the cancellation outcome or interrupt command drain ordering.
   If any write stalls, the host must call `fail()` at its deadline to force cleanup.
   Host failure settles `run()` immediately, including after an acknowledged but
   undrained write. The host owns deadlines and process-group termination.

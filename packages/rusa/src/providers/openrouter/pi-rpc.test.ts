@@ -474,4 +474,58 @@ describe("Pi RPC portable invocation spike", () => {
       reason: "Invalid or oversized Pi RPC output",
     });
   });
+  it.each([
+    "clear_queue",
+    "abort",
+  ])("preserves cancellation through stdout closure during %s drain", async (blocked) => {
+    const f = fixture();
+    const { result } = await start(f);
+    let release!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.transport.write = vi.fn(async (line) => {
+      if (JSON.parse(line).type === blocked) {
+        // A partial record can already be buffered when cancellation begins.
+        f.invocation.endStdout();
+        f.invocation.acceptStdout(Buffer.from("invalid stdout\n"));
+        await drained;
+      }
+    });
+    f.invocation.acceptStdout(Buffer.from('{"type":'));
+    const cancelled = f.invocation.cancel();
+    await vi.waitFor(() =>
+      expect(f.transport.write).toHaveBeenCalledWith(`${JSON.stringify({ type: blocked })}\n`)
+    );
+    expect(f.transport.close).not.toHaveBeenCalled();
+    release();
+    await cancelled;
+    expect(await result).toMatchObject({ success: false, reason: "Pi invocation cancelled" });
+    expect(f.transport.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    null,
+    42,
+    { id: model },
+    "other/model",
+  ])("rejects invalid reported model %j and preserves identity failure", async (reportedModel) => {
+    const f = fixture();
+    const { result } = await start(f);
+    assistant(f.invocation, { model: reportedModel, provider: "other", stopReason: "error" });
+    wire(f.invocation, { type: "agent_settled" });
+    expect(await result).toMatchObject({ success: false, reason: "Pi reported a different model" });
+  });
+
+  it("preserves the first execution failure across later identity and provider errors", async () => {
+    const f = fixture();
+    const { result } = await start(f);
+    wire(f.invocation, { type: "extension_error" });
+    assistant(f.invocation, { model: "other/model", stopReason: "error" });
+    wire(f.invocation, { type: "agent_settled" });
+    expect(await result).toMatchObject({
+      success: false,
+      reason: "Pi reported an execution error",
+    });
+  });
 });

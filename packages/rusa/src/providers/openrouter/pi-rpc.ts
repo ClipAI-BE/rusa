@@ -128,7 +128,7 @@ export class PiRpcInvocation {
   }
 
   acceptStdout(chunk: Buffer): void {
-    if (this.phase === "done") return;
+    if (this.phase === "done" || this.phase === "cancelling") return;
     try {
       this.decoder.push(chunk);
     } catch {
@@ -137,7 +137,7 @@ export class PiRpcInvocation {
   }
 
   endStdout(): void {
-    if (this.phase === "done") return;
+    if (this.phase === "done" || this.phase === "cancelling") return;
     try {
       this.decoder.end();
       this.fail();
@@ -260,7 +260,7 @@ export class PiRpcInvocation {
         record.assistantMessageEvent !== undefined &&
         object(record.assistantMessageEvent).type === "error")
     ) {
-      this.failure = "Pi reported an execution error";
+      this.failure ??= "Pi reported an execution error";
     }
     if (
       record.type === "compaction_start" ||
@@ -285,11 +285,11 @@ export class PiRpcInvocation {
         return;
       }
       const reportedModel = typeof message.model === "string" ? message.model : undefined;
-      if (reportedModel !== undefined && reportedModel !== this.model) {
-        this.failure = "Pi reported a different model";
+      if (message.model !== undefined && message.model !== this.model) {
+        this.failure ??= "Pi reported a different model";
       }
       if (message.provider !== undefined && message.provider !== "openrouter") {
-        this.failure = "Pi reported a different provider";
+        this.failure ??= "Pi reported a different provider";
       }
       this.requests.push({
         requestedModel: this.model,
@@ -299,7 +299,7 @@ export class PiRpcInvocation {
       this.finalStopReason = message.stopReason;
       this.output = "";
       if (message.stopReason === "error" || message.stopReason === "aborted") {
-        this.failure = "Pi reported a provider error or abort";
+        this.failure ??= "Pi reported a provider error or abort";
       }
       if (Array.isArray(message.content)) {
         for (const block of message.content) {
