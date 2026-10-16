@@ -30,8 +30,9 @@ and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a
   to end with `stop`; tool-use, length-limited and unfinished turns fail. Only
   the final assistant message supplies output text. Extension/stream errors and
   unexpected retry/compaction events fail. Command diagnostics are omitted.
-- Retain one usage observation per completed assistant message, including partial
-  work before interruption. Streaming and turn-end echoes do not duplicate it.
+- Retain one usage observation per completed assistant message received before
+  cancellation begins, including partial work reported before interruption.
+  Streaming and turn-end echoes do not duplicate it.
   Raw usage is a harness report. It is not a measurement of OpenRouter billed
   cost. Missing reported model or usage stays unknown. Nothing writes accounting
   rows, estimates supplier identity or persists a new provider under another name.
@@ -40,7 +41,10 @@ and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a
   abort contract, which permits queued continuation; it does not assert that this
   single-prompt adapter enqueues work. `cancel()` is awaitable and idempotent.
   Once cancellation begins, stdout bytes and EOF are ignored so they cannot
-  replace the cancellation outcome or interrupt command drain ordering.
+  replace the cancellation outcome or interrupt command drain ordering. Usage
+  emitted during cancellation, including an aborted final message, is dropped;
+  observations retained before cancellation remain available. These observations
+  are incomplete and cannot establish total billed usage.
   If any write stalls, the host must call `fail()` at its deadline to force cleanup.
   Host failure settles `run()` immediately, including after an acknowledged but
   undrained write. The host owns deadlines and process-group termination.

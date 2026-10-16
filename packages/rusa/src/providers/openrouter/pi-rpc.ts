@@ -3,7 +3,6 @@ import { StringDecoder } from "node:string_decoder";
 /** Wire contract pinned to @earendil-works/pi-coding-agent 0.99.2 (#808).
  * Experimental: deliberately absent from the provider registry and scheduler.
  */
-export const PI_SPIKE_VERSION = "0.99.2";
 type RecordValue = Record<string, unknown>;
 class PiAdmissionError extends Error {}
 
