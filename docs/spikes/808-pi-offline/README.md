@@ -37,7 +37,7 @@ PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/pac
 diff "$probe_dir/package/package.json.original" "$probe_dir/package/package.json" || [ "$?" -eq 1 ]
 PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/package" ci --omit=dev --ignore-scripts --no-audit --no-fund --legacy-peer-deps
 echo "036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5  $probe_dir/package/npm-shrinkwrap.json" | sha256sum -c -
-env -i "$probe_dir/node-v22.19.0-linux-x64/bin/node" "$probe_dir/package/dist/bundle/cli.js" --version
+env -i NODE_COMPILE_CACHE="$probe_dir/version-compile-cache" "$probe_dir/node-v22.19.0-linux-x64/bin/node" "$probe_dir/package/dist/bundle/cli.js" --version
 pnpm --filter rusa exec tsup src/providers/subprocess-execution.ts --format esm --no-config --out-dir "$probe_dir/supervisor"
 node docs/spikes/808-pi-offline/probe.mjs "$probe_dir/supervisor/subprocess-execution.js" "$probe_dir/node-v22.19.0-linux-x64/bin/node" "$probe_dir/package/dist/bundle/cli.js" > "$probe_dir/receipt.jsonl"
 cat "$probe_dir/receipt.jsonl"
@@ -45,7 +45,7 @@ cat "$probe_dir/receipt.jsonl"
 
 Stop on any failed command. Retain the receipt, then remove the temporary prefix
 when finished. Downloads and dependency installation require network access;
-the RPC launch uses an explicitly empty inherited environment plus only the five
+the RPC launch uses an explicitly empty inherited environment plus only the six
 entries logged in the receipt. `PI_OFFLINE` is not a network sandbox.
 
 The pinned Node archive includes npm 10.9.3. Its `pkg delete devDependencies`
@@ -80,9 +80,7 @@ diff removes only this block:
 from reviewed head `69d388d90f4e7e3533b207812775d6919783091a`. Its executable probe
 was the local predecessor of `probe.mjs`. The log is retained as the original
 five-command evidence requested in the [#808 follow-up](https://github.com/MEK-Org/rusa/issues/808#issuecomment-6229400004);
-it is historical evidence, not the output of the current three-scenario probe. `isolation-receipt.jsonl` records the
-three scenarios in the checked-in probe, using a freshly built supervisor from staging `8009e5bd`.
-The supervisor landed without a diff change in staging `8009e5bd`.
+it is historical evidence, not the output of the current three-scenario probe.
 
 All three scenarios correlate five IDs/commands, report the exact requested
 OpenRouter model, zero messages/pending messages, no session file, and no streaming.
@@ -91,11 +89,30 @@ themes. The child remains alive until supervisor close. The observed child
 signal is SIGKILL. `result.exitCode: 0` is the probe's normalized signal result,
 not a natural child exit status. The probe awaits direct-child closure and
 asserts ENOENT after deleting each temporary launch directory. This cleanup
-assertion covers only that directory. A [reviewer observed](https://github.com/MEK-Org/rusa/pull/1095#discussion_r4301696109)
-Pi calling `enableCompileCache()` without a directory and creating
-`/tmp/node-compile-cache` outside it: the version command wrote cache files,
-and the RPC probe recreated an empty cache directory. Removing the temporary
-prefix does not remove that cache. Startup isolation remains open.
+assertion covers only that directory. The current probe sets `NODE_COMPILE_CACHE`
+to a directory inside each launch root and asserts that Pi creates it before
+cleanup. The documented version command writes its cache under
+`$probe_dir/version-compile-cache`, removed with the setup prefix.
+`cache-contained-receipt.jsonl` records the current 30-record probe against the
+supervisor from staging `bacefb9f`. All three cache-presence and launch-cleanup
+assertions pass.
+
+The [historical isolation receipt](https://github.com/MEK-Org/rusa/blob/bacefb9fe5be37b726b27265cbfbe4b4c7aeed7d/docs/spikes/808-pi-offline/isolation-receipt.jsonl)
+predates this environment change and used the supervisor from staging `8009e5bd`. A
+[reviewer observed](https://github.com/MEK-Org/rusa/pull/1095#discussion_r4301696109)
+that its version launch wrote `/tmp/node-compile-cache` and RPC startup recreated
+an empty cache directory there. The current change redirects this known cache
+path; it does not inventory every filesystem write or establish a filesystem
+sandbox. It does not remove caches left by historical runs.
+
+Source inspection of pinned Pi `dist/main.js` shows `runMigrations(cwd)` before
+startup settings and runtime project trust. The launched `dist/bundle/cli.js`
+contains the same ordering in `dist/bundle/chunks/chunk-3YAHQSW6.js`.
+The unbundled `dist/migrations.js` calls
+`migrateExtensionSystem(cwd)`, which can rename project `.pi/commands` to
+`.pi/prompts` before resource discovery. The current empty/poison-settings
+fixtures do not exercise that migration. Project startup writes remain a
+separate isolation proof; discovery-disable flags alone do not establish it.
 
 | Scenario | Conflicting settings | Initial compaction | After RPC disable |
 | --- | --- | --- | --- |

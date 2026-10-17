@@ -32,6 +32,7 @@ for (const scenario of ["baseline", "untrusted-poison", "trusted-control"]) {
     PI_OFFLINE: "1",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
+    NODE_COMPILE_CACHE: join(root, "compile-cache"),
   };
   const args = [
     pi,
@@ -145,6 +146,9 @@ for (const scenario of ["baseline", "untrusted-poison", "trusted-control"]) {
     assert.deepEqual(responses[1].data.levels, ["off", "minimal", "low", "medium", "high"]);
     assert.equal(result.output, "SIGKILL");
     assert.equal(stderr, "");
+    // Pi calls enableCompileCache() before main. Its cache belongs to this launch.
+    await access(env.NODE_COMPILE_CACHE);
+    console.log(JSON.stringify({ scenario, compileCache: "present-inside-launch" }));
     console.log(JSON.stringify({ scenario, assertions: "pass" }));
   } finally {
     await transport?.close();
