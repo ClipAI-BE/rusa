@@ -72,8 +72,11 @@ The rest of #808 remains open. A production adapter needs the following evidence
    429, 5xx, stream failure, cancellation and timeout.
 5. Prove process cleanup, yield, restart and model-switch portable continuity with
    production supervisor integration. The synthetic subprocess tests prove direct-child
-   closure after settlement and EOF before settlement. The Linux process-tree fixture
-   proves termination of one ready same-group grandchild on close, abort and deadline.
+   closure after settlement and EOF before settlement. Existing
+   `process-group-kill.test.ts` proves live-grandchild abort cleanup through Copilot;
+   `sandbox-process-group-kill.test.ts` covers abort when bwrap is available.
+   The Linux duplex-close case in `process-group-kill.test.ts` adds termination evidence
+   for one ready same-group grandchild through the shared supervisor.
    Escaped process groups, sandbox/filesystem isolation, real Pi in-flight cancellation
    and harness continuity remain unproven.
 6. After operator provisioning and routing/data-policy review, run the separate
