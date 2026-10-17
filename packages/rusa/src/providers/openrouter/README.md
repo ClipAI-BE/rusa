@@ -110,22 +110,24 @@ escaped-descendant containment and real Pi compatibility remain open.
 
 ## Linux descendant termination fixture
 
-Run `pnpm exec vitest run src/providers/openrouter/process-tree.test.ts` from
-`packages/rusa`. Three cases start a synthetic Node parent through the shared
-supervisor. That parent forks one grandchild without detaching it. The grandchild
-reports readiness over IPC; the parent then reports both PIDs over stdout. Each
-case checks that both processes are running before explicit duplex close, abort,
-or the supervisor's 5 s deadline, and checks termination within a further 2 s.
-The fixture supplies an empty child environment and makes no inference requests.
+Run `pnpm exec vitest run src/providers/process-group-kill.test.ts` from
+`packages/rusa`. The duplex-close case starts the synthetic Node parent in
+`src/providers/fixtures/process-tree.mjs` through the shared supervisor. That
+parent forks one grandchild without detaching it. The grandchild reports readiness
+over IPC; the parent then reports both PIDs over stdout. The case checks that both
+processes are running before explicit duplex close, then checks termination within
+2 s. The supervisor's 5 s deadline bounds failure; readiness triggers close
+immediately. The fixture supplies an empty child environment and makes no
+inference requests.
 
-These Linux-only assertions use `/proc/<pid>/stat`. Missing entries and zombie
-state mean terminated. An orphan zombie may remain until PID 1 reaps it; the tests
-do not claim grandchild reaping. Failure cleanup kills surviving synthetic PIDs.
+This Linux-only case uses `/proc/<pid>/stat`. Missing entries and zombie state
+mean terminated. An orphan zombie may remain until PID 1 reaps it; the case does
+not claim grandchild reaping. Failure cleanup kills surviving synthetic PIDs.
 This proves one cooperative same-group topology, not containment of descendants
 that detach into another process group, a process namespace, sandbox policy, or
-behavior of Pi's own subprocesses. Non-Linux platforms skip these cases.
+behavior of Pi's own subprocesses. Non-Linux platforms skip this case.
 
 Verification on 2026-10-17: replacing the supervisor's negative-PID group signal
-with a positive direct-child PID makes all three cases fail at the descendant
-termination assertion. The failure cleanup removes the surviving fixture
+with a positive direct-child PID makes the duplex-close case fail at the
+descendant termination assertion. Failure cleanup removes surviving fixture
 processes. Restoring the group signal restores passing behavior.
