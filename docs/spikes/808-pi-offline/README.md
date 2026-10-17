@@ -117,16 +117,20 @@ The `untrusted-poison` scenario exercises this with a synthetic
 `cwd/.pi/commands/marker.md` alongside its conflicting settings. Despite
 `--no-approve` and all the discovery-disable flags,
 startup removes `commands/` and creates `prompts/` containing the exact marker
-bytes. RPC stdout remains JSON; stderr contains exactly
+bytes. Each complete stdout line parses as JSON, and the buffer is empty after
+termination, so no partial stdout tail remains. Stderr contains exactly
 `Migrated Project commands/ → prompts/` followed by a newline. The other two
 scenarios require empty stderr. The first migration run failed the old
 empty-stderr assertion; the current assertion records this observed notice.
 
 The migration scenario also seeds `HOME/.pi/agent/commands/marker.md`. With
 `PI_CODING_AGENT_DIR` pointing elsewhere, that ambient marker remains unchanged
-and no adjacent `prompts/` appears. Global migration still runs against the explicit
-`PI_CODING_AGENT_DIR`, which the probe owns and seeds without a `commands/`
-directory. No credential or executable fixture is used.
+and no adjacent `prompts/` appears. Source inspection of pinned Pi 0.99.2
+(`dist/migrations.js`, `migrateExtensionSystem`) shows that Global migration
+targets the explicit `PI_CODING_AGENT_DIR`. The probe owns that directory and
+seeds it without a `commands/` directory; this fixture does not distinguish
+Global migration running from being skipped. No credential or executable
+fixture is used.
 
 A production design still needs an explicit workspace/configuration boundary;
 discovery-disable flags alone do not provide it.
