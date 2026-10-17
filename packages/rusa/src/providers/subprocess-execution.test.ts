@@ -23,6 +23,11 @@ vi.mock("node:child_process", () => ({
 
 class MockChild extends EventEmitter {
   pid = 12345;
+  stdin = Object.assign(new EventEmitter(), {
+    destroy: vi.fn(),
+    destroyed: false,
+    write: vi.fn((_record: string, callback: (error?: Error) => void) => callback()),
+  });
   stdout = new EventEmitter();
   stderr = new EventEmitter();
 }
@@ -69,6 +74,33 @@ describe("runSubprocess helper-level unit coverage ", () => {
       exitCode: -1,
     }),
   };
+
+  it("closes duplex stdin on cancellation and detaches the abort listener", async () => {
+    const mockChild = new MockChild();
+    spawnFn.mockReturnValue(mockChild as unknown as ChildProcessWithoutNullStreams);
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    const onDuplex = vi.fn();
+    const run = runSubprocess({ ...baseConfig, signal: controller.signal, onDuplex });
+    mockChild.emit("spawn");
+    const transport = onDuplex.mock.calls[0][0];
+    await transport.write("request\n");
+    expect(mockChild.stdin.write).toHaveBeenCalledWith("request\n", expect.any(Function));
+    controller.abort(RUN_CEILING_ABORT_REASON);
+    expect((await run).abortReason).toBe(RUN_CEILING_ABORT_REASON);
+    expect(mockChild.stdin.destroy).toHaveBeenCalled();
+    expect(killSpy).toHaveBeenCalledWith(-12345, "SIGKILL");
+    expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+    let closed = false;
+    const closing = transport.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    mockChild.emit("close", null, "SIGKILL");
+    await closing;
+    expect(closed).toBe(true);
+  });
 
   it("handles timeout fire -> group teardown", async () => {
     vi.useFakeTimers();
