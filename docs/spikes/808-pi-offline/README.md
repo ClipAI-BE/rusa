@@ -80,9 +80,7 @@ diff removes only this block:
 from reviewed head `69d388d90f4e7e3533b207812775d6919783091a`. Its executable probe
 was the local predecessor of `probe.mjs`. The log is retained as the original
 five-command evidence requested in the [#808 follow-up](https://github.com/MEK-Org/rusa/issues/808#issuecomment-6229400004);
-it is historical evidence, not the output of the current three-scenario probe. `isolation-receipt.jsonl` records the
-three scenarios in the checked-in probe, using a freshly built supervisor from staging `8009e5bd`.
-The supervisor landed without a diff change in staging `8009e5bd`.
+it is historical evidence, not the output of the current three-scenario probe.
 
 All three scenarios correlate five IDs/commands, report the exact requested
 OpenRouter model, zero messages/pending messages, no session file, and no streaming.
@@ -93,14 +91,14 @@ not a natural child exit status. The probe awaits direct-child closure and
 asserts ENOENT after deleting each temporary launch directory. This cleanup
 assertion covers only that directory. The current probe sets `NODE_COMPILE_CACHE`
 to a directory inside each launch root and asserts that Pi creates it before
-cleanup. The version command above also uses a cache inside the setup prefix.
+cleanup. The documented version command writes its cache under
+`$probe_dir/version-compile-cache`, removed with the setup prefix.
 `cache-contained-receipt.jsonl` records the current 30-record probe against the
 supervisor from staging `bacefb9f`. All three cache-presence and launch-cleanup
-assertions pass. `version-cache-receipt.json` records a separate empty-environment
-version check: exit 0, version 0.99.2, 16 cache files (2,347,832 bytes) under its
-explicit temporary cache, followed by successful directory removal.
+assertions pass.
 
-The historical `isolation-receipt.jsonl` predates this environment change. A
+The [historical isolation receipt](https://github.com/MEK-Org/rusa/blob/bacefb9fe5be37b726b27265cbfbe4b4c7aeed7d/docs/spikes/808-pi-offline/isolation-receipt.jsonl)
+predates this environment change and used the supervisor from staging `8009e5bd`. A
 [reviewer observed](https://github.com/MEK-Org/rusa/pull/1095#discussion_r4301696109)
 that its version launch wrote `/tmp/node-compile-cache` and RPC startup recreated
 an empty cache directory there. The current change redirects this known cache
@@ -108,7 +106,9 @@ path; it does not inventory every filesystem write or establish a filesystem
 sandbox. It does not remove caches left by historical runs.
 
 Source inspection of pinned Pi `dist/main.js` shows `runMigrations(cwd)` before
-startup settings and runtime project trust. `dist/migrations.js` calls
+startup settings and runtime project trust. The launched `dist/bundle/cli.js`
+contains the same ordering in `dist/bundle/chunks/chunk-3YAHQSW6.js`.
+The unbundled `dist/migrations.js` calls
 `migrateExtensionSystem(cwd)`, which can rename project `.pi/commands` to
 `.pi/prompts` before resource discovery. The current empty/poison-settings
 fixtures do not exercise that migration. Project startup writes remain a
