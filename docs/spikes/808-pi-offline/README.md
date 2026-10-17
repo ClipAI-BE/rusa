@@ -19,7 +19,7 @@ the service runtime unchanged.
 * Published npm-shrinkwrap.json SHA-256:
   `036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5`.
 
-From the repository root, with curl, tar, sha256sum, sha512sum, pnpm and the
+From the repository root, with curl, tar, sha256sum, sha512sum, diff, pnpm and the
 repository dependencies installed:
 
 ```sh
@@ -27,13 +27,14 @@ probe_dir=$(mktemp -d)
 export probe_dir
 curl --fail --location https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.xz -o "$probe_dir/node.tar.xz"
 echo "c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2  $probe_dir/node.tar.xz" | sha256sum -c -
-tar -xJf "$probe_dir/node.tar.xz" -C "$probe_dir"
+tar -xJf "$probe_dir/node.tar.xz" -C "$probe_dir" --no-same-owner
 curl --fail --location https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.99.2.tgz -o "$probe_dir/pi.tgz"
 echo "e91d4167637bec2ad57067f7782d8aa2f4f3d50e1162201ec9dbd55904f9e3a3767e2d6705cf356944656ce64282bb96a16f5563f52b2f30f29c5e184e8969a0  $probe_dir/pi.tgz" | sha512sum -c -
-tar -xzf "$probe_dir/pi.tgz" -C "$probe_dir"
+tar -xzf "$probe_dir/pi.tgz" -C "$probe_dir" --no-same-owner
 echo "036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5  $probe_dir/package/npm-shrinkwrap.json" | sha256sum -c -
 cp "$probe_dir/package/package.json" "$probe_dir/package/package.json.original"
 PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/package" pkg delete devDependencies
+diff "$probe_dir/package/package.json.original" "$probe_dir/package/package.json" || [ "$?" -eq 1 ]
 PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/package" ci --omit=dev --ignore-scripts --no-audit --no-fund --legacy-peer-deps
 echo "036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5  $probe_dir/package/npm-shrinkwrap.json" | sha256sum -c -
 env -i "$probe_dir/node-v22.19.0-linux-x64/bin/node" "$probe_dir/package/dist/bundle/cli.js" --version
@@ -49,13 +50,29 @@ entries logged in the receipt. `PI_OFFLINE` is not a network sandbox.
 
 The pinned Node archive includes npm 10.9.3. Its `pkg delete devDependencies`
 command removes development dependencies from the temporary manifest without
-other value changes. `manifest.patch` retains the original workaround diff for
-comparison; it is not needed to run these instructions. The first npm 10.9.3
+other value changes. The copy and diff commands print the minimal manifest
+change for inspection (diff exits 1 for expected differences). The first npm 10.9.3
 `ci --omit=dev --ignore-scripts` attempt crashed in peer resolution; adding
 `--legacy-peer-deps` exposed development dependencies missing from the published
 production shrinkwrap. With the manifest edit and commands above, installation completed
-with 121 packages. The shrinkwrap remained unchanged. The original manifest and
-exact diff are retained so this workaround is reviewable.
+with 121 packages. The shrinkwrap remained unchanged. The expected manifest
+diff removes only this block:
+
+```diff
+-	"devDependencies": {
+-		"@earendil-works/pi-client": "^0.99.2",
+-		"@earendil-works/pi-protocol": "^0.99.2",
+-		"@earendil-works/pi-server": "^0.99.2",
+-		"@types/cross-spawn": "6.0.6",
+-		"@types/hosted-git-info": "3.0.5",
+-		"@types/node": "22.19.19",
+-		"@types/proper-lockfile": "4.1.4",
+-		"@types/semver": "7.7.1",
+-		"marked": "18.0.11",
+-		"shx": "0.4.0",
+-		"vitest": "4.1.11"
+-	},
+```
 
 ## Observations and limits
 
@@ -73,7 +90,12 @@ The launch has no tools, extensions, skills, templates, context discovery or
 themes. The child remains alive until supervisor close. The observed child
 signal is SIGKILL. `result.exitCode: 0` is the probe's normalized signal result,
 not a natural child exit status. The probe awaits direct-child closure and
-asserts ENOENT after deleting each temporary launch directory.
+asserts ENOENT after deleting each temporary launch directory. This cleanup
+assertion covers only that directory. A [reviewer observed](https://github.com/MEK-Org/rusa/pull/1095#discussion_r4301696109)
+Pi calling `enableCompileCache()` without a directory and creating
+`/tmp/node-compile-cache` outside it: the version command wrote cache files,
+and the RPC probe recreated an empty cache directory. Removing the temporary
+prefix does not remove that cache. Startup isolation remains open.
 
 | Scenario | Conflicting settings | Initial compaction | After RPC disable |
 | --- | --- | --- | --- |
