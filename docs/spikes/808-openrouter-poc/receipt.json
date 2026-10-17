@@ -10,7 +10,7 @@
     "success": 1,
     "payload": "{\"runId\":\"5f06fa85-f7ef-4597-bd0c-6b5f230efa83\",\"model\":\"openai/gpt-4.1-mini\"}"
   },
-  "observedAt": "2026-10-17T17:56:00Z",
+  "observedAt": "2026-10-17T17:56:00.484Z",
   "hostMode": "container-boundary (explicit host execution, no worker sandbox claim)",
   "keyUsageAfterAllPrototypeAttemptsUSD": 0.149956,
   "inferenceUsage": [
