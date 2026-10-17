@@ -93,12 +93,12 @@ after the mutation before running the normal suite.
 
 The subprocess fixture launches only the current Node executable with an empty
 environment and a synthetic RPC peer. It never loads Pi or inference credentials.
-Its test-only host writes through stdin callbacks, feeds stdout bytes into the
-protocol decoder, drops stderr, applies a deadline, kills the detached process
-group on close and awaits Node's `close` event before returning. The two cases
-assert successful settlement and the exact EOF-before-settlement error.
-Each has a 10 s test timeout around a 3 s fallback deadline, so a missing EOF
-listener fails with the deadline reason. The peer stays alive after settlement
-and after closing stdout so direct-child cleanup is exercised. Rusa's current `runSubprocess`
-ignores stdin; duplex support and sandbox reuse remain production work rather than
-being replaced by this fixture host.
+The fixture uses the shared subprocess supervisor's opt-in duplex transport.
+Writes await stdin callbacks; close destroys stdin, kills the detached process
+group, and awaits the direct child's close event. The host feeds stdout bytes
+into the protocol decoder and distinguishes actual EOF from termination flushes.
+The two cases assert successful settlement and the exact EOF-before-settlement
+error. Each has a 10 s test timeout around a 3 s fallback deadline, so a missing
+EOF listener fails with the deadline reason. The peer stays alive after settlement
+and after closing stdout so direct-child cleanup is exercised. Sandbox reuse,
+descendant cleanup verification and real Pi compatibility remain open.

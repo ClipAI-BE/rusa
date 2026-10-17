@@ -1,60 +1,51 @@
 // @vitest-environment node
-import { spawn } from "node:child_process";
+
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PiRpcInvocation, type PiRpcTransport } from "./pi-rpc.js";
+import { runSubprocess, type SubprocessDuplex } from "../subprocess-execution.js";
+import { PiRpcInvocation } from "./pi-rpc.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/rpc-child.mjs", import.meta.url));
 
-/** Test-only host. Production must use Rusa's sandbox and shared supervisor.
- * The existing runSubprocess helper ignores stdin and cannot drive RPC yet.
- */
+/** Synthetic peer using the shared supervisor. Sandbox/Pi compatibility remain unproven. */
 async function runFixture(mode: "success" | "eof", prompt = "portable context") {
-  const child = spawn(process.execPath, [fixturePath, mode], {
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: true,
-    env: {},
-  });
-  let reaped = false;
-  const closed = new Promise<void>((resolve) =>
-    child.once("close", () => {
-      reaped = true;
-      resolve();
-    })
-  );
-  const transport: PiRpcTransport = {
-    write: (record) =>
-      new Promise<void>((resolve, reject) => {
-        child.stdin.write(record, (error) => (error ? reject(error) : resolve()));
-      }),
-    close: () => {
-      child.stdin.destroy();
-      if (child.pid && !reaped) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-      }
-    },
+  let invocation: PiRpcInvocation | undefined;
+  let outcome: ReturnType<PiRpcInvocation["run"]> | undefined;
+  let signal: NodeJS.Signals | undefined;
+  let transport: SubprocessDuplex | undefined;
+  const failed = (reason: string) => {
+    invocation?.fail(reason);
+    return { success: false, output: reason, exitCode: 1 };
   };
-  const invocation = new PiRpcInvocation(transport, "vendor/fixed-model");
-  child.stdout.on("data", (chunk: Buffer) => invocation.acceptStdout(chunk));
-  child.stdout.on("end", () => invocation.endStdout());
-  child.once("error", () => invocation.fail("Fixture spawn failed"));
-  // A killed writer may emit EPIPE independently of its write callback.
-  child.stdin.on("error", () => invocation.fail("Fixture stdin failed"));
-  child.stderr.resume();
-  const timer = setTimeout(() => invocation.fail("Fixture deadline exceeded"), 3000);
   try {
-    const result = invocation.run(prompt);
-    const outcome = await result;
-    await closed;
-    return { outcome, signal: child.signalCode };
+    await runSubprocess({
+      command: process.execPath,
+      args: [fixturePath, mode],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 3000,
+      onDuplex: (value) => {
+        transport = value;
+        invocation = new PiRpcInvocation(value, "vendor/fixed-model");
+        outcome = invocation.run(prompt);
+      },
+      handleStdoutData: (chunk) => invocation?.acceptStdout(chunk),
+      onStdoutEnd: (_chunks, cause) => {
+        if (cause === "eof") invocation?.endStdout();
+      },
+      handleStderrData: () => {},
+      buildKilledResult: () => failed("Fixture deadline exceeded"),
+      buildSignalResult: (_attribution, receivedSignal) => {
+        signal = receivedSignal;
+        return failed("Fixture subprocess signalled");
+      },
+      buildExitResult: () => failed("Fixture subprocess exited"),
+      buildSpawnErrorResult: () => failed("Fixture subprocess failed"),
+    });
+    if (!outcome) throw new Error("Fixture did not start");
+    return { outcome: await outcome, signal };
   } finally {
-    clearTimeout(timer);
-    transport.close();
-    await closed;
+    await transport?.close();
   }
 }
 
