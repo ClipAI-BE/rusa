@@ -61,7 +61,7 @@ exact diff are retained so this workaround is reviewable.
 
 ## Observations and limits
 
-`startup-receipt.jsonl` is the original five-command receipt using the supervisor
+`startup-receipt.log` preserves the original mixed-format five-command receipt using the supervisor
 from reviewed head `69d388d90f4e7e3533b207812775d6919783091a`. Its executable probe
 was the local predecessor of `probe.mjs`. `isolation-receipt.jsonl` records the
 three scenarios in the checked-in probe, using a freshly built supervisor from staging `8009e5bd`.
