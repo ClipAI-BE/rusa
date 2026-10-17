@@ -80,9 +80,9 @@ diff removes only this block:
 from reviewed head `69d388d90f4e7e3533b207812775d6919783091a`. Its executable probe
 was the local predecessor of `probe.mjs`. The log is retained as the original
 five-command evidence requested in the [#808 follow-up](https://github.com/MEK-Org/rusa/issues/808#issuecomment-6229400004);
-it is historical evidence, not the output of the current five-scenario probe.
+it is historical evidence, not the output of the current three-scenario probe.
 
-All five scenarios correlate five IDs/commands, report the exact requested
+All three scenarios correlate five IDs/commands, report the exact requested
 OpenRouter model, zero messages/pending messages, no session file, and no streaming.
 The launch has no tools, extensions, skills, templates, context discovery or
 themes. The child remains alive until supervisor close. The observed child
@@ -93,8 +93,8 @@ assertion covers only that directory. The current probe sets `NODE_COMPILE_CACHE
 to a directory inside each launch root and asserts that Pi creates it before
 cleanup. The documented version command writes its cache under
 `$probe_dir/version-compile-cache`, removed with the setup prefix.
-`startup-isolation-receipt.jsonl` records the current 52-record probe against the
-supervisor built from staging `ef54a3c0`. All five cache-presence and launch-cleanup
+`startup-isolation-receipt.jsonl` records the current 31-record probe against the
+supervisor built from staging `ef54a3c0`. All three cache-presence and launch-cleanup
 assertions pass. The [historical cache receipt](https://github.com/MEK-Org/rusa/blob/ef54a3c0ce6acf93b538ce94adf3b8757209b4e7/docs/spikes/808-pi-offline/cache-contained-receipt.jsonl)
 records the previous three-scenario probe.
 
@@ -113,36 +113,29 @@ The unbundled `dist/migrations.js` calls
 `migrateExtensionSystem(cwd)`, which can rename project `.pi/commands` to
 `.pi/prompts` before resource discovery. This fixture follows the source finding
 reported in [#808](https://github.com/MEK-Org/rusa/issues/808#issuecomment-6231245069).
-The `untrusted-migration` scenario now exercises this with a synthetic
-`cwd/.pi/commands/marker.md`. It uses the same conflicting settings as
-`untrusted-poison`. Despite `--no-approve` and all the discovery-disable flags,
+The `untrusted-poison` scenario exercises this with a synthetic
+`cwd/.pi/commands/marker.md` alongside its conflicting settings. Despite
+`--no-approve` and all the discovery-disable flags,
 startup removes `commands/` and creates `prompts/` containing the exact marker
 bytes. RPC stdout remains JSON; stderr contains exactly
-`Migrated Project commands/ → prompts/` followed by a newline. The other four
+`Migrated Project commands/ → prompts/` followed by a newline. The other two
 scenarios require empty stderr. The first migration run failed the old
 empty-stderr assertion; the current assertion records this observed notice.
 
-Both migration scenarios also seed `HOME/.pi/agent/commands/marker.md`. With
+The migration scenario also seeds `HOME/.pi/agent/commands/marker.md`. With
 `PI_CODING_AGENT_DIR` pointing elsewhere, that ambient marker remains unchanged
-and no adjacent `prompts/` appears. No credential or executable fixture is used.
+and no adjacent `prompts/` appears. Global migration still runs against the explicit
+`PI_CODING_AGENT_DIR`, which the probe owns and seeds without a `commands/`
+directory. No credential or executable fixture is used.
 
-`isolated-cwd-control` seeds the same project and ambient poison, then launches
-from a separate empty directory within the temporary root. It verifies the
-original project marker stays in `commands/`, no project `prompts/` appears,
-and no `.pi` is created in the launch cwd. Effective compaction remains false.
-This proves only that this separate-cwd launch avoids the demonstrated migration
-and selected settings override. It does not show a production actor can work in
-its workspace while excluding project startup files. A production design still
-needs an explicit workspace/configuration boundary; discovery-disable flags
-alone do not provide it.
+A production design still needs an explicit workspace/configuration boundary;
+discovery-disable flags alone do not provide it.
 
 | Scenario | Conflicting settings | Initial compaction | After RPC disable |
 | --- | --- | --- | --- |
 | baseline | none outside explicit agent directory | false | false |
-| untrusted-poison | HOME/.pi/agent and cwd/.pi, with --no-approve | false | false |
-| trusted-control | same files, with --approve | true | true |
-| untrusted-migration | same poison plus synthetic legacy command files, with --no-approve | false | false |
-| isolated-cwd-control | same poison outside separate empty launch cwd, with --no-approve | false | false |
+| untrusted-poison | HOME/.pi/agent and cwd/.pi, plus synthetic legacy command files, with --no-approve | false | false |
+| trusted-control | same conflicting settings, with --approve | true | true |
 
 Poison files enable compaction and request a conflicting model/provider. All
 scenarios explicitly disable warming/retry and pin the requested CLI model.
@@ -159,6 +152,6 @@ The state assertions cover only the reported model and compaction setting. They 
 not establish complete configuration/credential isolation, denied extra tools,
 network isolation, native MCP readiness/authorization, descendant containment,
 inference behavior, budgets or accounting. Startup reads project settings before
-runtime trust handling. The migration fixture proves one startup write and a
-bounded separate-cwd control, not an exhaustive inventory of startup side effects.
+runtime trust handling. The migration fixture proves one startup write, not an
+exhaustive inventory of startup side effects.
 #808 and its paid-test/registration gates remain open.

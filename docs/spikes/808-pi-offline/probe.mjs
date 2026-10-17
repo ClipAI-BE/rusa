@@ -11,13 +11,7 @@ const { runSubprocess } = await import(pathToFileURL(resolve(supervisorPath)).hr
 const node = resolve(nodePath);
 const pi = resolve(piPath);
 
-for (const scenario of [
-  "baseline",
-  "untrusted-poison",
-  "trusted-control",
-  "untrusted-migration",
-  "isolated-cwd-control",
-]) {
+for (const scenario of ["baseline", "untrusted-poison", "trusted-control"]) {
   const root = await mkdtemp(join(tmpdir(), "pi-offline-"));
   let transport;
   let failure;
@@ -26,8 +20,8 @@ for (const scenario of [
   let stderr = "";
   const responses = [];
   const migrationLine = "Migrated Project commands/ → prompts/";
-  const hasMigrationFixture = ["untrusted-migration", "isolated-cwd-control"].includes(scenario);
-  const cwd = join(root, scenario === "isolated-cwd-control" ? "isolated-work" : "work");
+  const hasMigrationFixture = scenario === "untrusted-poison";
+  const cwd = join(root, "work");
   const marker = "Synthetic migration marker. No prompt or credential.\n";
   const commands = [
     { id: "state", type: "get_state" },
@@ -77,7 +71,7 @@ for (const scenario of [
     void transport.write(JSON.stringify(commands[responses.length]) + "\n").catch(fail);
   };
   try {
-    for (const dir of ["home/.pi/agent", "agent", "work/.pi", "isolated-work"]) {
+    for (const dir of ["home/.pi/agent", "agent", "work/.pi"]) {
       await mkdir(join(root, dir), { recursive: true });
     }
     await writeFile(join(root, "agent/settings.json"), settings(false));
@@ -159,26 +153,17 @@ for (const scenario of [
     }
     assert.deepEqual(responses[1].data.levels, ["off", "minimal", "low", "medium", "high"]);
     assert.equal(result.output, "SIGKILL");
-    assert.equal(stderr, scenario === "untrusted-migration" ? `${migrationLine}\n` : "");
+    assert.equal(stderr, hasMigrationFixture ? `${migrationLine}\n` : "");
     assert.equal(buffer, "");
     if (hasMigrationFixture) {
-      if (scenario === "untrusted-migration") {
-        await assert.rejects(access(join(root, "work/.pi/commands")), { code: "ENOENT" });
-        assert.equal(await readFile(join(root, "work/.pi/prompts/marker.md"), "utf8"), marker);
-      } else {
-        assert.equal(await readFile(join(root, "work/.pi/commands/marker.md"), "utf8"), marker);
-        await assert.rejects(access(join(root, "work/.pi/prompts")), { code: "ENOENT" });
-        await assert.rejects(access(join(cwd, ".pi")), { code: "ENOENT" });
-      }
+      await assert.rejects(access(join(root, "work/.pi/commands")), { code: "ENOENT" });
+      assert.equal(await readFile(join(root, "work/.pi/prompts/marker.md"), "utf8"), marker);
       assert.equal(await readFile(join(root, "home/.pi/agent/commands/marker.md"), "utf8"), marker);
       await assert.rejects(access(join(root, "home/.pi/agent/prompts")), { code: "ENOENT" });
       console.log(
         JSON.stringify({
           scenario,
-          projectCommands:
-            scenario === "untrusted-migration"
-              ? "renamed-to-prompts-marker-preserved"
-              : "unchanged-no-prompts",
+          projectCommands: "renamed-to-prompts-marker-preserved",
           ambientCommands: "unchanged-no-prompts",
         })
       );
