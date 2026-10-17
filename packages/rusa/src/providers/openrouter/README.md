@@ -6,8 +6,8 @@ boundary for one fresh portable invocation. It is not registered as a production
 provider. Importing it cannot launch a harness or spend inference credit.
 
 The contract targets `@earendil-works/pi-coding-agent@0.99.2`, source
-`005af57d88ee23b33778f343a9595b32e67ff788`. This is a protocol compatibility
-target, not an installed or verified executable. The authoritative references are
+`005af57d88ee23b33778f343a9595b32e67ff788`. The opt-in [offline executable receipt](../../../../../docs/spikes/808-pi-offline/README.md)
+records startup and selected configuration readbacks for that release, without inference. The authoritative references are
 the pinned [RPC protocol](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a9595b32e67ff788/packages/coding-agent/docs/rpc.md),
 [commands](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a9595b32e67ff788/packages/coding-agent/docs/rpc-commands.md),
 and [events](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a9595b32e67ff788/packages/coding-agent/docs/json.md).
