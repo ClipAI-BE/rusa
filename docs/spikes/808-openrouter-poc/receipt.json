@@ -214,5 +214,6 @@
         }
       ]
     }
-  ]
+  ],
+  "modelProvenance": "Historical Pi configuration echo, not verified upstream model identity. Amendment leaves RunResult.model unset."
 }

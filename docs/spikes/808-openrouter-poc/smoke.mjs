@@ -1,11 +1,13 @@
 // Opt-in paid smoke: a disposable Rusa instance, real Pi and OpenRouter,
 // fake human chat and GitHub. Run from the repository root after building tsup.
+
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { assertOwnedListeners } from "./ownership.mjs";
 
 const require = createRequire(resolve("packages/rusa/package.json"));
 const Database = require("better-sqlite3");
@@ -38,6 +40,7 @@ await writeFile(
           nodePath: resolve(nodePath),
           piPath: resolve(piPath),
           apiKeyPath: resolve(apiKeyPath),
+          artifactDir: join(root, "artifacts"),
         },
       },
     },
@@ -74,6 +77,8 @@ child.once("exit", () => {
 const dashboard = "http://127.0.0.1:8323";
 const chat = "http://127.0.0.1:8325";
 const post = async (url, data) => {
+  if (closed) throw new Error("Instance exited before write");
+  await assertOwnedListeners(child.pid, [8323, 8325]);
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -148,8 +153,16 @@ try {
           "SELECT success, payload FROM mesh_events WHERE actor_id = ? AND kind = 'run_end' AND ts >= ? ORDER BY rowid DESC LIMIT 1"
         )
         .get(actor.id, pingAt);
-      if (reply && settled?.success === 1 && JSON.parse(settled.payload).model === model) {
-        const receipt = { root, actorId: actor.id, model, nonce, reply, settled };
+      if (reply && settled?.success === 1) {
+        const receipt = {
+          root,
+          actorId: actor.id,
+          requestedModel: model,
+          modelProvenance: "Pi configuration echo only; upstream identity unverified",
+          nonce,
+          reply,
+          settled,
+        };
         await writeFile(join(root, "receipt.json"), JSON.stringify(receipt, null, 2), {
           mode: 0o600,
         });

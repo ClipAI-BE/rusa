@@ -13,7 +13,7 @@ export interface ProviderConfig {
   cliCommand?: string;
   dailyCap?: string;
   /** Explicit opt-in for the local, host-only Pi/OpenRouter proof of concept. */
-  openrouterPoc?: { nodePath: string; piPath: string; apiKeyPath: string };
+  openrouterPoc?: { nodePath: string; piPath: string; apiKeyPath: string; artifactDir?: string };
   /**
    * Codex only: route every Codex refresh through the daemon's host-owned
    * broker so launched processes never hold or write the canonical login
