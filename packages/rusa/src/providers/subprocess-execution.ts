@@ -25,22 +25,15 @@ function describeSpawnRejection(err: unknown): Error {
   );
 }
 
-/**
- * Shared lifecycle for a detached, process-grouped subprocess run.
- *
- * Providers parameterize the parts that differ (stdout/stderr handling, result
- * shaping) while this helper owns the load-bearing mechanics: spawn, group kill,
- * timeout, cancellation listener attach/detach, and settlement ordering.
- */
 export interface SubprocessDuplex {
-  /** Resolves after the complete record drains through the stdin write callback. */
+  /** Resolves when Node invokes the stdin write callback, without peer acknowledgment. */
   write(record: string): Promise<void>;
   /** Close stdin, kill the process group, and await the direct child close event. */
   close(): Promise<void>;
 }
 
 export interface SubprocessRunConfig {
-  /** Opt into piped stdin. Called after successful spawn with lifecycle handlers attached. */
+  /** Opt into piped stdin. Called after onSpawn, with lifecycle handlers attached. */
   onDuplex?: (transport: SubprocessDuplex) => void;
   command: string;
   args: string[];
@@ -56,7 +49,7 @@ export interface SubprocessRunConfig {
   handleStdoutData?: (data: Buffer, chunks: string[]) => void;
   /** Replace the default raw stderr capture. */
   handleStderrData?: (data: Buffer, chunks: string[]) => void;
-  /** Flush stdout on EOF or termination. The cause distinguishes actual pipe EOF. */
+  /** Flush stdout on EOF or termination. Actual pipe EOF may follow our own kill signal. */
   onStdoutEnd?: (chunks: string[], cause: "eof" | "termination") => void;
   cleanup?: () => void;
   /** Best-effort observation; called only after Node reports a successful spawn. */
@@ -67,6 +60,13 @@ export interface SubprocessRunConfig {
   buildSpawnErrorResult: (err: Error) => RunResult;
 }
 
+/**
+ * Shared lifecycle for a detached, process-grouped subprocess run.
+ *
+ * Providers parameterize the parts that differ (stdout/stderr handling, result
+ * shaping) while this helper owns the load-bearing mechanics: spawn, group kill,
+ * timeout, cancellation listener attach/detach, and settlement ordering.
+ */
 export function runSubprocess(config: SubprocessRunConfig): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
     const chunks: string[] = [];
@@ -107,13 +107,7 @@ export function runSubprocess(config: SubprocessRunConfig): Promise<RunResult> {
       return;
     }
 
-    let reaped = false;
-    const closed = new Promise<void>((resolveClose) =>
-      child.once("close", () => {
-        reaped = true;
-        resolveClose();
-      })
-    );
+    const closed = new Promise<void>((resolveClose) => child.once("close", resolveClose));
 
     child.once("spawn", () => {
       try {
@@ -125,7 +119,7 @@ export function runSubprocess(config: SubprocessRunConfig): Promise<RunResult> {
 
     const killGroup = () => {
       child.stdin?.destroy();
-      if (child.pid && !reaped) {
+      if (child.pid) {
         try {
           process.kill(-child.pid, "SIGKILL");
         } catch {
@@ -213,10 +207,9 @@ export function runSubprocess(config: SubprocessRunConfig): Promise<RunResult> {
     });
 
     if (config.onDuplex) {
-      child.stdin?.on("error", () => {
-        killGroup();
-        settle(config.buildSpawnErrorResult(new Error("Subprocess stdin failed")));
-      });
+      // The write callback rejects the write. Consume stream errors separately
+      // while leaving exit/stderr attribution to the child's close event.
+      child.stdin?.on("error", () => {});
       child.once("spawn", () => {
         if (settled) return;
         try {

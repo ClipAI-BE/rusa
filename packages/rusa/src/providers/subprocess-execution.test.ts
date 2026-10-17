@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import EventEmitter from "node:events";
 import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runSubprocess } from "./subprocess-execution.js";
+import { runSubprocess, type SubprocessDuplex } from "./subprocess-execution.js";
 import {
   RUN_CEILING_ABORT_REASON,
   STALL_WATCHDOG_ABORT_REASON,
@@ -100,6 +100,51 @@ describe("runSubprocess helper-level unit coverage ", () => {
     mockChild.emit("close", null, "SIGKILL");
     await closing;
     expect(closed).toBe(true);
+    killSpy.mockClear();
+    await transport.close();
+    expect(killSpy).toHaveBeenCalledWith(-12345, "SIGKILL");
+  });
+
+  it("waits for write callbacks and preserves exit diagnostics after EPIPE", async () => {
+    const mockChild = new MockChild();
+    spawnFn.mockReturnValue(mockChild as unknown as ChildProcessWithoutNullStreams);
+    let writeCallback: ((error?: Error) => void) | undefined;
+    mockChild.stdin.write.mockImplementation((_record, callback) => {
+      writeCallback = callback;
+    });
+    let transport!: SubprocessDuplex;
+    const run = runSubprocess({
+      ...baseConfig,
+      onDuplex: (value) => {
+        transport = value;
+      },
+    });
+    let settled = false;
+    void run.then(() => {
+      settled = true;
+    });
+    mockChild.emit("spawn");
+    let written = false;
+    const writing = transport.write("request\n").then(() => {
+      written = true;
+    });
+    await Promise.resolve();
+    expect(written).toBe(false);
+    expect(writeCallback).toBeTypeOf("function");
+    writeCallback?.();
+    await writing;
+    expect(written).toBe(true);
+
+    const rejected = expect(transport.write("next\n")).rejects.toThrow(/^Subprocess stdin failed$/);
+    const pipeError = Object.assign(new Error("private request contents"), { code: "EPIPE" });
+    writeCallback?.(pipeError);
+    mockChild.stderr.emit("data", Buffer.from("peer diagnostic"));
+    mockChild.stdin.emit("error", pipeError);
+    await rejected;
+    expect(settled).toBe(false);
+    expect(killSpy).not.toHaveBeenCalled();
+    mockChild.emit("close", 2, null);
+    expect(await run).toMatchObject({ success: false, exitCode: 2, output: "peer diagnostic" });
   });
 
   it("handles timeout fire -> group teardown", async () => {

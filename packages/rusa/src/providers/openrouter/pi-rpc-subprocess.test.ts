@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { runSubprocess } from "../subprocess-execution.js";
+import { runSubprocess, type SubprocessDuplex } from "../subprocess-execution.js";
 import { PiRpcInvocation } from "./pi-rpc.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/rpc-child.mjs", import.meta.url));
@@ -12,35 +12,41 @@ async function runFixture(mode: "success" | "eof", prompt = "portable context") 
   let invocation: PiRpcInvocation | undefined;
   let outcome: ReturnType<PiRpcInvocation["run"]> | undefined;
   let signal: NodeJS.Signals | undefined;
+  let transport: SubprocessDuplex | undefined;
   const failed = (reason: string) => {
     invocation?.fail(reason);
     return { success: false, output: reason, exitCode: 1 };
   };
-  await runSubprocess({
-    command: process.execPath,
-    args: [fixturePath, mode],
-    cwd: process.cwd(),
-    env: {},
-    timeoutMs: 3000,
-    onDuplex: (transport) => {
-      invocation = new PiRpcInvocation(transport, "vendor/fixed-model");
-      outcome = invocation.run(prompt);
-    },
-    handleStdoutData: (chunk) => invocation?.acceptStdout(chunk),
-    onStdoutEnd: (_chunks, cause) => {
-      if (cause === "eof") invocation?.endStdout();
-    },
-    handleStderrData: () => {},
-    buildKilledResult: () => failed("Fixture deadline exceeded"),
-    buildSignalResult: (_attribution, receivedSignal) => {
-      signal = receivedSignal;
-      return failed("Fixture subprocess signalled");
-    },
-    buildExitResult: () => failed("Fixture subprocess exited"),
-    buildSpawnErrorResult: () => failed("Fixture subprocess failed"),
-  });
-  if (!outcome) throw new Error("Fixture did not start");
-  return { outcome: await outcome, signal };
+  try {
+    await runSubprocess({
+      command: process.execPath,
+      args: [fixturePath, mode],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 3000,
+      onDuplex: (value) => {
+        transport = value;
+        invocation = new PiRpcInvocation(value, "vendor/fixed-model");
+        outcome = invocation.run(prompt);
+      },
+      handleStdoutData: (chunk) => invocation?.acceptStdout(chunk),
+      onStdoutEnd: (_chunks, cause) => {
+        if (cause === "eof") invocation?.endStdout();
+      },
+      handleStderrData: () => {},
+      buildKilledResult: () => failed("Fixture deadline exceeded"),
+      buildSignalResult: (_attribution, receivedSignal) => {
+        signal = receivedSignal;
+        return failed("Fixture subprocess signalled");
+      },
+      buildExitResult: () => failed("Fixture subprocess exited"),
+      buildSpawnErrorResult: () => failed("Fixture subprocess failed"),
+    });
+    if (!outcome) throw new Error("Fixture did not start");
+    return { outcome: await outcome, signal };
+  } finally {
+    await transport?.close();
+  }
 }
 
 describe("Pi RPC through synthetic subprocess pipes", () => {
