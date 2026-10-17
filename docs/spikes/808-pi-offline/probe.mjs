@@ -139,6 +139,7 @@ for (const scenario of ["baseline", "untrusted-poison", "trusted-control"]) {
       assert.equal(state.pendingMessageCount, 0);
       assert.equal(state.isStreaming, false);
       assert.equal(state.sessionFile, undefined);
+      // Observed Pi 0.99.2 precedence, not desired behavior or a classified upstream bug.
       assert.equal(state.autoCompactionEnabled, scenario === "trusted-control");
     }
     assert.deepEqual(responses[1].data.levels, ["off", "minimal", "low", "medium", "high"]);

@@ -12,14 +12,14 @@ the service runtime unchanged.
 
 * Pi: `@earendil-works/pi-coding-agent@0.99.2`, source
   `005af57d88ee23b33778f343a9595b32e67ff788`.
-* Pi archive SHA-512 (base64):
-  `6R1BZ2N77CrVcGf3eC2KovTz1Q4RYiAeydvVWQT546N2fi1nBc81aURlbOZCgruWoW9VY/UrLzDynF4YTolpoA==`.
+* Pi archive SHA-512 (hex):
+  `e91d4167637bec2ad57067f7782d8aa2f4f3d50e1162201ec9dbd55904f9e3a3767e2d6705cf356944656ce64282bb96a16f5563f52b2f30f29c5e184e8969a0`.
 * Node `v22.19.0`, linux-x64 archive SHA-256:
   `c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2`.
 * Published npm-shrinkwrap.json SHA-256:
   `036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5`.
 
-From the repository root, with Python 3.12+, curl, tar, sha256sum, pnpm and the
+From the repository root, with curl, tar, sha256sum, sha512sum, pnpm and the
 repository dependencies installed:
 
 ```sh
@@ -29,16 +29,11 @@ curl --fail --location https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.
 echo "c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2  $probe_dir/node.tar.xz" | sha256sum -c -
 tar -xJf "$probe_dir/node.tar.xz" -C "$probe_dir"
 curl --fail --location https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.99.2.tgz -o "$probe_dir/pi.tgz"
-python3 - <<'PY'
-import base64, hashlib, os, pathlib, tarfile
-p = pathlib.Path(os.environ['probe_dir'])
-assert base64.b64encode(hashlib.sha512((p/'pi.tgz').read_bytes()).digest()).decode() == '6R1BZ2N77CrVcGf3eC2KovTz1Q4RYiAeydvVWQT546N2fi1nBc81aURlbOZCgruWoW9VY/UrLzDynF4YTolpoA=='
-with tarfile.open(p/'pi.tgz') as archive:
-    archive.extractall(p, filter='data')
-PY
+echo "e91d4167637bec2ad57067f7782d8aa2f4f3d50e1162201ec9dbd55904f9e3a3767e2d6705cf356944656ce64282bb96a16f5563f52b2f30f29c5e184e8969a0  $probe_dir/pi.tgz" | sha512sum -c -
+tar -xzf "$probe_dir/pi.tgz" -C "$probe_dir"
 echo "036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5  $probe_dir/package/npm-shrinkwrap.json" | sha256sum -c -
 cp "$probe_dir/package/package.json" "$probe_dir/package/package.json.original"
-patch -d "$probe_dir/package" package.json < docs/spikes/808-pi-offline/manifest.patch
+PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/package" pkg delete devDependencies
 PATH="$probe_dir/node-v22.19.0-linux-x64/bin:$PATH" npm --prefix "$probe_dir/package" ci --omit=dev --ignore-scripts --no-audit --no-fund --legacy-peer-deps
 echo "036c4af893d78da7df2d8b1464db904e8e2c4ad73a4d6c572f1161699fdaedf5  $probe_dir/package/npm-shrinkwrap.json" | sha256sum -c -
 env -i "$probe_dir/node-v22.19.0-linux-x64/bin/node" "$probe_dir/package/dist/bundle/cli.js" --version
@@ -52,10 +47,13 @@ when finished. Downloads and dependency installation require network access;
 the RPC launch uses an explicitly empty inherited environment plus only the five
 entries logged in the receipt. `PI_OFFLINE` is not a network sandbox.
 
-The temporary manifest patch removes devDependencies and reformats JSON without other value changes. The first npm 10.9.3
+The pinned Node archive includes npm 10.9.3. Its `pkg delete devDependencies`
+command removes development dependencies from the temporary manifest without
+other value changes. `manifest.patch` retains the original workaround diff for
+comparison; it is not needed to run these instructions. The first npm 10.9.3
 `ci --omit=dev --ignore-scripts` attempt crashed in peer resolution; adding
 `--legacy-peer-deps` exposed development dependencies missing from the published
-production shrinkwrap. With the patch and commands above, installation completed
+production shrinkwrap. With the manifest edit and commands above, installation completed
 with 121 packages. The shrinkwrap remained unchanged. The original manifest and
 exact diff are retained so this workaround is reviewable.
 
@@ -63,7 +61,9 @@ exact diff are retained so this workaround is reviewable.
 
 `startup-receipt.log` preserves the original mixed-format five-command receipt using the supervisor
 from reviewed head `69d388d90f4e7e3533b207812775d6919783091a`. Its executable probe
-was the local predecessor of `probe.mjs`. `isolation-receipt.jsonl` records the
+was the local predecessor of `probe.mjs`. The log is retained as the original
+five-command evidence requested in the [#808 follow-up](https://github.com/MEK-Org/rusa/issues/808#issuecomment-6229400004);
+it is historical evidence, not the output of the current three-scenario probe. `isolation-receipt.jsonl` records the
 three scenarios in the checked-in probe, using a freshly built supervisor from staging `8009e5bd`.
 The supervisor landed without a diff change in staging `8009e5bd`.
 
@@ -87,6 +87,9 @@ The trusted control demonstrates that the project poison is effective. Pi report
 success for `set_auto_compaction(false)` while effective state remains true under
 the trusted project override. The first probe run expected false after that
 command and failed; the retained receipt asserts the observed override behavior.
+This records Pi 0.99.2 behavior, not desired behavior. Whether this precedence is
+intentional or an upstream bug is unknown. A change in this pinned observation
+should fail the probe and require review.
 Production admission must verify effective state rather than trust success alone.
 
 These assertions cover only the reported model and compaction setting. They do
