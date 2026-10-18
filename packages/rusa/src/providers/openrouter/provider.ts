@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "../../config/types.js";
 import { buildActorBwrapArgs, buildActorBwrapCommand, teardownFlutterOverlay } from "../sandbox.js";
@@ -32,12 +32,19 @@ export class OpenRouterProvider implements CodingProvider {
     if (opts.session?.id || opts.computerUse) {
       throw new Error("OpenRouter prototype supports fresh runs without computer use only");
     }
-    const keyStat = await stat(config.apiKeyPath);
-    if (!keyStat.isFile() || (keyStat.mode & 0o077) !== 0) {
-      throw new Error("OpenRouter key must be a private file (mode 600 or stricter)");
+    const authDir =
+      config.authDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+    let credential: { type: "api_key"; key: string };
+    try {
+      const auth = JSON.parse(await readFile(join(authDir, "auth.json"), "utf8"));
+      const entry = auth?.openrouter;
+      const key =
+        entry?.type === "oauth" ? entry.access : entry?.type === "api_key" ? entry.key : undefined;
+      if (typeof key !== "string" || !key.trim() || key.startsWith("!")) throw new Error();
+      credential = { type: "api_key", key };
+    } catch {
+      throw new Error("OpenRouter authentication required: launch pi and run /login openrouter");
     }
-    const key = (await readFile(config.apiKeyPath, "utf8")).trim();
-    if (!key) throw new Error("OpenRouter key file is empty");
     const root = await mkdtemp(join(tmpdir(), "rusa-openrouter-"));
     const tempPaths: string[] = [];
     let transport: SubprocessDuplex | undefined;
@@ -52,6 +59,9 @@ export class OpenRouterProvider implements CodingProvider {
       const work = join(root, "work");
       await mkdir(agent, { mode: 0o700 });
       await mkdir(work, { mode: 0o700 });
+      await writeFile(join(agent, "auth.json"), JSON.stringify({ openrouter: credential }), {
+        mode: 0o600,
+      });
       await writeFile(
         join(agent, "settings.json"),
         JSON.stringify({
@@ -80,7 +90,6 @@ export class OpenRouterProvider implements CodingProvider {
         { mode: 0o600 }
       );
       const args = [
-        config.piPath,
         "--mode",
         "rpc",
         "--no-session",
@@ -100,7 +109,7 @@ export class OpenRouterProvider implements CodingProvider {
         "--model",
         this.model,
       ];
-      let command = config.nodePath;
+      let command = config.piCommand ?? "pi";
       let spawnArgs = args;
       if (opts.sandbox) {
         const sandbox = buildActorBwrapArgs(
@@ -121,7 +130,7 @@ export class OpenRouterProvider implements CodingProvider {
         command,
         args: spawnArgs,
         cwd: work,
-        // The model receives only its inference key and actor-bound MCP URLs.
+        // Pi receives only its projected provider login and actor-bound MCP URLs.
         // Empty cwd avoids Pi startup migration of the actor workspace.
         env: {
           HOME: root,
@@ -129,7 +138,7 @@ export class OpenRouterProvider implements CodingProvider {
           NODE_COMPILE_CACHE: join(root, "cache"),
           PI_SKIP_VERSION_CHECK: "1",
           PI_TELEMETRY: "0",
-          OPENROUTER_API_KEY: key,
+          PATH: process.env.PATH,
         },
         timeoutMs: Math.min(opts.timeoutMs ?? 120_000, 120_000),
         signal: opts.signal,

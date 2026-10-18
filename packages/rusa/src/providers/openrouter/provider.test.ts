@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,13 +19,32 @@ afterEach(async () => {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "openrouter-provider-test-"));
   roots.push(root);
-  const apiKeyPath = join(root, "key");
-  await writeFile(apiKeyPath, "synthetic-not-a-real-key", { mode: 0o600 });
+  const apiKeyPath = join(root, "auth.json");
+  await writeFile(
+    apiKeyPath,
+    JSON.stringify({
+      openrouter: {
+        type: "oauth",
+        access: "synthetic-not-a-real-key",
+        refresh: "",
+        expires: Number.MAX_SAFE_INTEGER,
+      },
+      other: { type: "api_key", key: "other-secret" },
+    }),
+    { mode: 0o600 }
+  );
+  const executableRoot = await mkdtemp(join(process.cwd(), ".openrouter-host-probe-"));
+  roots.push(executableRoot);
+  const piCommand = join(executableRoot, "pi");
+  await writeFile(
+    piCommand,
+    `#!/bin/sh\nexec '${process.execPath}' '${fileURLToPath(new URL("./fixtures/rpc-child.mjs", import.meta.url))}' "$@"\n`,
+    { mode: 0o700 }
+  );
   const config = {
     openrouterPoc: {
-      nodePath: process.execPath,
-      piPath: fileURLToPath(new URL("./fixtures/rpc-child.mjs", import.meta.url)),
-      apiKeyPath,
+      piCommand,
+      authDir: root,
       artifactDir: join(root, "artifacts"),
     },
   };
@@ -45,11 +64,26 @@ it("requires opt-in and refuses native sessions before inference", async () => {
     provider.run({ cwd: root, prompt: "ping", session: { id: "native-session" } })
   ).rejects.toThrow(/fresh runs/);
 });
-it("refuses a group-readable key", async () => {
+it("requires the independently managed Pi login", async () => {
   const { root, apiKeyPath, provider } = await fixture();
   vi.stubEnv("RUSA_OPENROUTER_POC", "1");
-  await chmod(apiKeyPath, 0o640);
-  await expect(provider.run({ cwd: root, prompt: "ping" })).rejects.toThrow(/private file/);
+  await rm(apiKeyPath);
+  await expect(provider.run({ cwd: root, prompt: "ping" })).rejects.toThrow(/launch pi/);
+});
+it("uses a static Pi login without changing the source profile", async () => {
+  const { root, apiKeyPath, provider } = await fixture();
+  vi.stubEnv("RUSA_OPENROUTER_POC", "1");
+  const source = JSON.stringify({
+    openrouter: { type: "api_key", key: "synthetic-not-a-real-key" },
+  });
+  await writeFile(apiKeyPath, source);
+  expect((await provider.run({ cwd: root, prompt: "ping" })).success).toBe(true);
+  expect(await readFile(apiKeyPath, "utf8")).toBe(source);
+  await writeFile(
+    apiKeyPath,
+    JSON.stringify({ openrouter: { type: "api_key", key: "!echo secret" } })
+  );
+  await expect(provider.run({ cwd: root, prompt: "ping" })).rejects.toThrow(/launch pi/);
 });
 it("settles through real pipes, reaps the peer and retains usage without a subscription token record", async () => {
   const { root, provider } = await fixture();
