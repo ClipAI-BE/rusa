@@ -12,7 +12,9 @@ if (process.env.PI_CODING_AGENT_DIR) {
     await readFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), "utf8")
   );
   if (settings.cacheWarming !== "off") process.exit(77);
-  const auth = JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR, "auth.json"), "utf8"));
+  const auth = JSON.parse(
+    await readFile(join(process.env.PI_CODING_AGENT_DIR, "auth.json"), "utf8")
+  );
   assert.deepEqual(Object.keys(auth), ["openrouter"]);
   assert.equal(auth.openrouter.key, "synthetic-not-a-real-key");
   assert.equal(process.env.OPENROUTER_API_KEY, undefined);
@@ -46,7 +48,6 @@ lines.on("line", (line) => {
     assert.throws(() => accessSync(probe.secretFile));
     assert.equal(readFileSync(probe.hostFile, "utf8"), "private");
     assert.throws(() => writeFileSync(probe.hostFile, "changed"));
-
   }
   const data =
     command.type === "get_state"
