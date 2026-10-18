@@ -3,14 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "../../config/types.js";
+import { buildActorBwrapArgs, buildActorBwrapCommand, teardownFlutterOverlay } from "../sandbox.js";
 import { runSubprocess, type SubprocessDuplex } from "../subprocess-execution.js";
 import type { CodingProvider, RunOptions, RunResult } from "../types.js";
 import { mcpAdmissionExtension } from "./mcp-admission.js";
 import { PiRpcInvocation, type PiRpcOutcome } from "./pi-rpc.js";
 
 /** Local end-to-end prototype. Fresh Pi process, portable context, MCP-only tools.
- * Requires host execution; refuses sandbox requests until the launch boundary
- * is integrated. This is not a sandbox implementation.
+ * Worker launches use the shared actor bwrap boundary with isolated Pi state.
  * Usage stays in an artifact, outside subscription accounting and quota pacing.
  */
 export class OpenRouterProvider implements CodingProvider {
@@ -29,8 +29,8 @@ export class OpenRouterProvider implements CodingProvider {
         "OpenRouter prototype requires RUSA_OPENROUTER_POC=1, explicit paths and model"
       );
     }
-    if (opts.sandbox || opts.session?.id || opts.computerUse) {
-      throw new Error("OpenRouter prototype supports fresh host runs only");
+    if (opts.session?.id || opts.computerUse) {
+      throw new Error("OpenRouter prototype supports fresh runs without computer use only");
     }
     const keyStat = await stat(config.apiKeyPath);
     if (!keyStat.isFile() || (keyStat.mode & 0o077) !== 0) {
@@ -39,6 +39,7 @@ export class OpenRouterProvider implements CodingProvider {
     const key = (await readFile(config.apiKeyPath, "utf8")).trim();
     if (!key) throw new Error("OpenRouter key file is empty");
     const root = await mkdtemp(join(tmpdir(), "rusa-openrouter-"));
+    const tempPaths: string[] = [];
     let transport: SubprocessDuplex | undefined;
     let invocation: PiRpcInvocation | undefined;
     let outcome: Promise<PiRpcOutcome> | undefined;
@@ -99,9 +100,26 @@ export class OpenRouterProvider implements CodingProvider {
         "--model",
         this.model,
       ];
+      let command = config.nodePath;
+      let spawnArgs = args;
+      if (opts.sandbox) {
+        const sandbox = buildActorBwrapArgs(
+          opts.sandbox.worktreePath,
+          undefined,
+          undefined,
+          opts.sandbox.isE2eRoot,
+          opts.sandbox.understandingMount
+        );
+        tempPaths.push(...sandbox.tempPaths);
+        // The shared launcher shadows host /tmp. Rebind only this invocation's
+        // private state, then override its actor cwd to avoid Pi migrations.
+        sandbox.args.push("--bind", root, root, "--chdir", work);
+        spawnArgs = buildActorBwrapCommand(sandbox, command, args);
+        command = "bwrap";
+      }
       const processResult = await runSubprocess({
-        command: config.nodePath,
-        args,
+        command,
+        args: spawnArgs,
         cwd: work,
         // The model receives only its inference key and actor-bound MCP URLs.
         // Empty cwd avoids Pi startup migration of the actor workspace.
@@ -164,6 +182,8 @@ export class OpenRouterProvider implements CodingProvider {
       };
     } finally {
       await transport?.close();
+      if (opts.sandbox) teardownFlutterOverlay(opts.sandbox.worktreePath);
+      await Promise.all(tempPaths.map((path) => rm(path, { recursive: true, force: true })));
       await rm(root, { recursive: true, force: true });
     }
   }

@@ -1,10 +1,15 @@
 // @vitest-environment node
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenRouterProvider } from "./provider.js";
+
+vi.mock("../../config/loader.js", () => ({
+  loadConfig: () => ({ github: { account: "test" }, providers: {}, gitBridge: false }),
+}));
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -31,17 +36,14 @@ async function fixture() {
     provider: new OpenRouterProvider("test", config, "vendor/fixed-model"),
   };
 }
-it("requires opt-in and refuses worker sandbox launches before inference", async () => {
+it("requires opt-in and refuses native sessions before inference", async () => {
   const { root, provider } = await fixture();
   vi.stubEnv("RUSA_OPENROUTER_POC", "");
   await expect(provider.run({ cwd: root, prompt: "ping" })).rejects.toThrow(/requires/);
   vi.stubEnv("RUSA_OPENROUTER_POC", "1");
   await expect(
     provider.run({ cwd: root, prompt: "ping", session: { id: "native-session" } })
-  ).rejects.toThrow(/host runs only/);
-  await expect(
-    provider.run({ cwd: root, prompt: "ping", sandbox: { worktreePath: root } })
-  ).rejects.toThrow(/host runs only/);
+  ).rejects.toThrow(/fresh runs/);
 });
 it("refuses a group-readable key", async () => {
   const { root, apiKeyPath, provider } = await fixture();
@@ -89,3 +91,44 @@ it("retains distinct artifacts for concurrent invocations", async () => {
   expect(results.every((result) => result.success)).toBe(true);
   expect(await readdir(join(root, "artifacts"))).toHaveLength(2);
 });
+
+let bwrapCapable = false;
+try {
+  execFileSync("bwrap", ["--ro-bind", "/", "/", "--", "/bin/true"], { stdio: "ignore" });
+  bwrapCapable = true;
+} catch {}
+it.skipIf(!bwrapCapable)(
+  "launches the synthetic RPC peer inside the real worker sandbox",
+  async () => {
+    const { root, provider } = await fixture();
+    vi.stubEnv("RUSA_OPENROUTER_POC", "1");
+    const actor = join(root, "workers", "actor");
+    const sibling = join(root, "workers", "sibling");
+    const secrets = join(root, "secrets");
+    await Promise.all([actor, sibling, secrets].map((path) => mkdir(path, { recursive: true })));
+    const hostRoot = await mkdtemp(join(process.cwd(), ".openrouter-host-probe-"));
+    roots.push(hostRoot);
+    const probe = {
+      ownFile: join(actor, "own"),
+      siblingFile: join(sibling, "private"),
+      secretFile: join(secrets, "ungranted"),
+      hostFile: join(hostRoot, "host-file"),
+    };
+    await Promise.all(
+      Object.entries(probe).map(([name, path]) =>
+        writeFile(path, name === "ownFile" ? "own" : "private")
+      )
+    );
+    const prompt = `sandbox-probe:${JSON.stringify(probe)}`;
+    const result = await provider.run({
+      cwd: actor,
+      prompt,
+      sandbox: { worktreePath: actor },
+      mcpServers: [{ name: "inbox", url: "http://synthetic.invalid" }],
+    });
+    expect(result).toEqual({ success: true, output: prompt, exitCode: 0 });
+    expect(await readFile(probe.ownFile, "utf8")).toBe("updated");
+    expect(await readFile(probe.hostFile, "utf8")).toBe("private");
+  },
+  15000
+);

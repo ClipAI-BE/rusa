@@ -1,4 +1,7 @@
 // Synthetic peer only. No Pi imports, credentials, network or model requests.
+
+import assert from "node:assert/strict";
+import { accessSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -30,6 +33,17 @@ const lines = createInterface({ input: process.stdin });
 setInterval(() => {}, 1000);
 lines.on("line", (line) => {
   const command = JSON.parse(line);
+  if (command.type === "prompt" && command.message.startsWith("sandbox-probe:")) {
+    const probe = JSON.parse(command.message.slice("sandbox-probe:".length));
+    assert.equal(process.cwd(), join(process.env.HOME, "work"));
+    assert.equal(readFileSync(probe.ownFile, "utf8"), "own");
+    writeFileSync(probe.ownFile, "updated");
+    assert.throws(() => accessSync(probe.siblingFile));
+    assert.throws(() => accessSync(probe.secretFile));
+    assert.equal(readFileSync(probe.hostFile, "utf8"), "private");
+    assert.throws(() => writeFileSync(probe.hostFile, "changed"));
+    assert.equal(process.env.OPENROUTER_API_KEY, "synthetic-not-a-real-key");
+  }
   const data =
     command.type === "get_state"
       ? {

@@ -102,3 +102,24 @@ error. Each has a 10 s test timeout around a 3 s fallback deadline, so a missing
 EOF listener fails with the deadline reason. The peer stays alive after settlement
 and after closing stdout so direct-child cleanup is exercised. Sandbox reuse,
 descendant cleanup verification and real Pi compatibility remain open.
+
+
+## Worker sandbox prototype
+
+The opt-in adapter supports fresh worker runs through the shared actor bwrap
+launcher. The invocation's private Pi state is rebound after the shared `/tmp`
+shadow, and Pi starts in its empty working directory. Actor-bound MCP settings,
+admission checks, the minimal child environment and RPC supervision also apply
+inside bwrap. Native-session resume and computer use remain unsupported.
+
+`provider.test.ts` runs a synthetic RPC peer through real bwrap when available.
+It checks writable actor files, hidden sibling files and ungranted secrets,
+a visible read-only host file, isolated Pi cwd, synthetic inference-key delivery,
+and successful RPC settlement. This does not establish real Pi inference or
+complete the remaining production requirements above.
+
+Rusa does not yet ingest an OpenRouter model catalog. Explicit model IDs pass to
+Pi, whose installed runtime resolves them against its own catalog. A future
+catalog probe should reconcile OpenRouter's structured Models API with that
+runtime and use the existing persisted model catalog. Catalog listing alone
+cannot establish successful inference access.
