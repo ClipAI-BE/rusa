@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenRouterProvider } from "./provider.js";
@@ -169,6 +169,40 @@ it.skipIf(!bwrapCapable)(
     expect(result).toEqual({ success: true, output: prompt, exitCode: 0 });
     expect(await readFile(probe.ownFile, "utf8")).toBe("updated");
     expect(await readFile(probe.hostFile, "utf8")).toBe("private");
+  },
+  15000
+);
+
+it("resolves a relative Pi login directory against the host cwd", async () => {
+  const { root, config } = await fixture();
+  vi.stubEnv("RUSA_OPENROUTER_POC", "1");
+  vi.stubEnv("PI_CODING_AGENT_DIR", relative(process.cwd(), root));
+  const { authDir: _authDir, ...paths } = config.openrouterPoc;
+  const provider = new OpenRouterProvider("test", { openrouterPoc: paths }, "vendor/fixed-model");
+  expect((await provider.run({ cwd: root, prompt: "ping" })).success).toBe(true);
+});
+
+it.skipIf(!bwrapCapable)(
+  "releases the supplied understanding snapshot after success and missing-login failure",
+  async () => {
+    const { root, apiKeyPath, provider } = await fixture();
+    vi.stubEnv("RUSA_OPENROUTER_POC", "1");
+    const actor = join(root, "workers", "actor");
+    await mkdir(actor, { recursive: true });
+    for (const missingLogin of [false, true]) {
+      const understandingMount = await mkdtemp(join(tmpdir(), "rusa-iu-snapshot-"));
+      roots.push(understandingMount);
+      await writeFile(join(understandingMount, "snapshot"), "synthetic understanding");
+      if (missingLogin) await rm(apiKeyPath);
+      const run = provider.run({
+        cwd: actor,
+        prompt: "ping",
+        sandbox: { worktreePath: actor, understandingMount },
+      });
+      if (missingLogin) await expect(run).rejects.toThrow(/launch pi/);
+      else expect((await run).success).toBe(true);
+      await expect(readdir(understandingMount)).rejects.toThrow(/ENOENT/);
+    }
   },
   15000
 );

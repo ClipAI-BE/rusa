@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ProviderConfig } from "../../config/types.js";
 import { buildActorBwrapArgs, buildActorBwrapCommand, teardownFlutterOverlay } from "../sandbox.js";
 import { runSubprocess, type SubprocessDuplex } from "../subprocess-execution.js";
@@ -23,29 +23,9 @@ export class OpenRouterProvider implements CodingProvider {
   ) {}
 
   async run(opts: RunOptions): Promise<RunResult> {
-    const config = this.config.openrouterPoc;
-    if (process.env.RUSA_OPENROUTER_POC !== "1" || !config || !this.model) {
-      throw new Error(
-        "OpenRouter prototype requires RUSA_OPENROUTER_POC=1, explicit paths and model"
-      );
-    }
-    if (opts.session?.id || opts.computerUse) {
-      throw new Error("OpenRouter prototype supports fresh runs without computer use only");
-    }
-    const authDir =
-      config.authDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-    const authPath = join(authDir, "auth.json");
-    try {
-      const auth = JSON.parse(await readFile(authPath, "utf8"));
-      const entry = auth?.openrouter;
-      const key =
-        entry?.type === "oauth" ? entry.access : entry?.type === "api_key" ? entry.key : undefined;
-      if (typeof key !== "string" || !key.trim() || key.startsWith("!")) throw new Error();
-    } catch {
-      throw new Error("OpenRouter authentication required: launch pi and run /login openrouter");
-    }
-    const root = await mkdtemp(join(tmpdir(), "rusa-openrouter-"));
-    const tempPaths: string[] = [];
+    const tempPaths: string[] = opts.sandbox?.understandingMount
+      ? [opts.sandbox.understandingMount]
+      : [];
     let transport: SubprocessDuplex | undefined;
     let invocation: PiRpcInvocation | undefined;
     let outcome: Promise<PiRpcOutcome> | undefined;
@@ -54,6 +34,33 @@ export class OpenRouterProvider implements CodingProvider {
       return { success: false, output: reason, exitCode: 1 };
     };
     try {
+      const config = this.config.openrouterPoc;
+      if (process.env.RUSA_OPENROUTER_POC !== "1" || !config || !this.model) {
+        throw new Error(
+          "OpenRouter prototype requires RUSA_OPENROUTER_POC=1, explicit paths and model"
+        );
+      }
+      if (opts.session?.id || opts.computerUse) {
+        throw new Error("OpenRouter prototype supports fresh runs without computer use only");
+      }
+      const authDir =
+        config.authDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+      const authPath = resolve(authDir, "auth.json");
+      try {
+        const auth = JSON.parse(await readFile(authPath, "utf8"));
+        const entry = auth?.openrouter;
+        const key =
+          entry?.type === "oauth"
+            ? entry.access
+            : entry?.type === "api_key"
+              ? entry.key
+              : undefined;
+        if (typeof key !== "string" || !key.trim() || key.startsWith("!")) throw new Error();
+      } catch {
+        throw new Error("OpenRouter authentication required: launch pi and run /login openrouter");
+      }
+      const root = await mkdtemp(join(tmpdir(), "rusa-openrouter-"));
+      tempPaths.push(root);
       const agent = join(root, "agent");
       const work = join(root, "work");
       await mkdir(agent, { mode: 0o700 });
@@ -201,7 +208,6 @@ export class OpenRouterProvider implements CodingProvider {
       await transport?.close();
       if (opts.sandbox) teardownFlutterOverlay(opts.sandbox.worktreePath);
       await Promise.all(tempPaths.map((path) => rm(path, { recursive: true, force: true })));
-      await rm(root, { recursive: true, force: true });
     }
   }
 }
