@@ -32,9 +32,6 @@ export class OpenRouterProvider implements CodingProvider {
     if (opts.session?.id || opts.computerUse) {
       throw new Error("OpenRouter prototype supports fresh runs without computer use only");
     }
-    if (opts.openrouterAdmitted !== true) {
-      throw new Error("OpenRouter launch denied: provider-use:openrouter admission required");
-    }
     const authDir =
       config.authDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
     const authPath = join(authDir, "auth.json");
@@ -61,7 +58,7 @@ export class OpenRouterProvider implements CodingProvider {
       const work = join(root, "work");
       await mkdir(agent, { mode: 0o700 });
       await mkdir(work, { mode: 0o700 });
-      // Host-root PoC uses the operator-managed profile directly. Workers receive
+      // Unsandboxed Pi uses the operator-managed profile directly. Workers receive
       // a read-only bind below, never a copied credential or secret-file grant.
       if (!opts.sandbox) await symlink(authPath, join(agent, "auth.json"));
       await writeFile(
@@ -141,7 +138,7 @@ export class OpenRouterProvider implements CodingProvider {
         command,
         args: spawnArgs,
         cwd: work,
-        // Pi receives the admitted operator-managed login and actor-bound MCP URLs.
+        // Pi receives the operator-managed login and actor-bound MCP URLs.
         // Empty cwd avoids Pi startup migration of the actor workspace.
         env: {
           HOME: root,

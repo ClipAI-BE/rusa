@@ -183,8 +183,6 @@ export interface ActorOptions {
    * grants after a skipped lock wait for the next run.
    */
   isComputerUseAdmitted?: () => boolean;
-  /** Trusted local grant lookup, evaluated per provider attempt after queueing. */
-  isOpenRouterAdmitted?: () => boolean;
   /**
    * Called immediately before each provider attempt with the instance that will
    * run. Unlike onRunStart, this includes fallbacks without changing run
@@ -785,8 +783,6 @@ export class Actor {
         addDirs: this.opts.addDirs,
         sandbox,
         computerUse: this.opts.isComputerUseAdmitted?.() === true,
-        openrouterAdmitted:
-          provider.providerName === "openrouter" && this.opts.isOpenRouterAdmitted?.() === true,
         // timeoutMs: provider OS-level timeout is the actor ceiling plus a grace
         // margin. The AbortController is the primary kill path; Node's spawn
         // timeout is only a backstop for the rare case our abort fails to land.

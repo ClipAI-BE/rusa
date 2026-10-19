@@ -80,8 +80,6 @@ export interface RunOptions {
    * must be denied.
    */
   computerUse?: boolean;
-  /** Trusted local runtime admission to spend the saved OpenRouter login. Fails closed. */
-  openrouterAdmitted?: boolean;
 }
 
 export interface RunResult {

@@ -113,32 +113,6 @@ describe("Actor", () => {
     expect(provider.calls[0]?.prompt).toBe("PROMPT: inbox work");
   });
 
-  it("resolves trusted OpenRouter admission after the attempt hook and refreshes each run", async () => {
-    const provider = new FakeProvider(() => ({ sessionId: undefined }), "openrouter");
-    let admitted = true;
-    const lookup = vi.fn(() => admitted);
-    const actor = makeActor(
-      {
-        isOpenRouterAdmitted: lookup,
-        // Represents a revoke while the actor was waiting to launch.
-        onProviderAttempt: () => {
-          admitted = false;
-        },
-      },
-      provider
-    );
-    actor.requestRun();
-    expect(lookup).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(provider.calls[0]?.openrouterAdmitted).toBe(false);
-    expect(lookup).toHaveBeenCalledTimes(1);
-    actor.requestRun();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(lookup).toHaveBeenCalledTimes(2);
-    expect(provider.calls[1]?.openrouterAdmitted).toBe(false);
-    actor.close();
-  });
-
   it("#866 forwards each launched fallback prompt under the same run id without blocking on persistence", async () => {
     const observed: { runId: string; prompt: string }[] = [];
     const lifecycle = createActorLifecycle([

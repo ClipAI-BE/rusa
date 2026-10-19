@@ -109,7 +109,6 @@ import {
   RUN_TERMINAL_EVENT_KINDS,
 } from "./mesh-events.js";
 import type { ScheduledMessage, ScheduledMessageScheduler } from "./os-scheduler.js";
-import { OPENROUTER_USE_CAPABILITY } from "./provider-use.js";
 import {
   type ResponsiveInterruptionVerdict,
   type ShadowResponsiveInterruptionClassifier,
@@ -3470,9 +3469,6 @@ export class ActorMesh {
     capability: string,
     verb: "grant" | "revoke"
   ): void {
-    if (capability === OPENROUTER_USE_CAPABILITY && grantorId !== this.rootId) {
-      throw new Error(`only the configured root may ${verb} ${capability}`);
-    }
     const grantee = this.actors.get(granteeId);
     if (!grantee) {
       throw new Error(`unknown thread id: ${granteeId}`);

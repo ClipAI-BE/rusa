@@ -10,10 +10,12 @@ This is an explicit host-execution prototype, not production activation. Set
 `RUSA_OPENROUTER_POC=1` and configure `providers.openrouter.openrouterPoc` with
 optional `piCommand` (default `pi`), absolute `authDir` (default Pi's normal
 `PI_CODING_AGENT_DIR` or `~/.pi/agent`) and optional absolute `artifactDir`.
-Launch the globally installed Pi, then run `/login openrouter`. The adapter reads
-only the OpenRouter entry from that login and projects its credential into a
-private per-run `auth.json`. Other provider logins, settings and extensions are
-not copied. Missing or unsupported login produces an authentication-required
+Launch the globally installed Pi, then run `/login openrouter`. The adapter validates the
+OpenRouter entry and exposes the existing
+`auth.json` through a read-only bind for workers or a symlink for unsandboxed
+launches. The whole saved profile is visible to Pi, including other provider
+entries. Run settings, MCP configuration and cwd remain isolated. Missing or
+unsupported login produces an authentication-required
 error. Command-based API key entries are unsupported. No mesh key file or
 `OPENROUTER_API_KEY` is supplied. The operator's auth file is never modified.
 
@@ -56,7 +58,7 @@ and logs remain available for inspection; remove that disposable root when done.
 The provider registry and normal model-selection path resolve `openrouter`.
 Each invocation starts a fresh supervised Pi RPC process, validates its exact
 model/session state using the existing protocol implementation and passes only
-a provider-only auth file plus temporary runtime settings.
+the existing saved login plus temporary runtime settings.
 Pi starts in an empty temporary cwd to avoid migrating actor project files.
 Only native MCP support is loaded. `--no-builtin-tools` disables filesystem and
 shell tools while retaining granted MCP tools. `--no-tools` would disable MCP
@@ -70,12 +72,18 @@ that setting no usage files are written, and the actor cwd is never used for art
 There are no schema changes and no entries in reset-window quota pacing.
 
 Production checkpoints should be decided against this working implementation.
-Remaining work includes worker sandbox/secret-grant integration, model/runtime
-provisioning, richer MCP admission and authorization failure handling, admission
+Remaining work includes model/runtime provisioning, richer MCP admission and
+authorization failure handling, admission
 budget controls, durable cost accounting, improved error diagnostics, portable
 context behavior across real tasks and broader tool/process containment. The
 prototype has a 120-second invocation ceiling and disables automatic retries,
-compaction and cache warming (`cacheWarming: "off"`); account-side limits remain external to this prototype. The separate per-actor spend-policy review remains open.
+compaction and cache warming (`cacheWarming: "off"`); account-side limits remain
+external to this prototype. Provider invocation permissions and cross-provider
+credential isolation are
+deferred to a broader design discussion. Per the
+[operator ruling](https://github.com/MEK-Org/rusa/pull/1112#issuecomment-6266285746),
+this prototype uses the same provider-use standard as existing providers,
+without an OpenRouter-only grant or mixed-profile rejection.
 
 ## Observed results
 
