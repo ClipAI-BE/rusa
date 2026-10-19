@@ -62,8 +62,8 @@ The rest of #808 remains open. A production adapter needs the following evidence
    Prove this with a poisoned environment and a real offline harness invocation.
 2. Supply actor-bound MCP endpoints and fail readiness if any required endpoint
    cannot connect. Prove granted calls work and ungranted calls are refused.
-3. Resolve inference credentials through the existing actor secret grant. Model
-   access to its own capped inference key is part of the threat model. Verify
+3. Resolve saved-login spend admission through `provider-use:openrouter` in the
+   existing actor capability ledger (PR #1112 architecture disposition). Verify
    cross-actor isolation and credential redaction in actual process output.
 4. Add opt-in configuration, exact model/capability validation and budget admission.
    Missing, expired or exhausted budget must block even responsive starts, while
@@ -118,8 +118,24 @@ a visible read-only host file, isolated Pi cwd, synthetic inference-key delivery
 and successful RPC settlement. This does not establish real Pi inference or
 complete the remaining production requirements above.
 
-Rusa does not yet ingest an OpenRouter model catalog. Explicit model IDs pass to
-Pi, whose installed runtime resolves them against its own catalog. A future
-catalog probe should reconcile OpenRouter's structured Models API with that
-runtime and use the existing persisted model catalog. Catalog listing alone
-cannot establish successful inference access.
+Worker launches require the explicit `provider-use:openrouter` capability in the
+existing grant ledger. Only the configured root (also holding capability-admin)
+may grant or revoke it. It is never seeded at spawn or inferred from a model.
+Trusted local wiring checks the current actor's active grants immediately before
+each provider attempt, after queueing. Missing admission fails before reading
+`auth.json` or launching a subprocess. Remote runtime wiring supplies no admission
+and therefore cannot launch this prototype. The existing unsandboxed configured
+host-root proof remains explicit; other unsandboxed actors still require a grant.
+
+`secret:<name>` grants retain their file-mount meaning. `provider-use:openrouter`
+authorizes spending the operator's saved Pi login. The adapter binds the existing
+`auth.json` read-only into isolated Pi state for bwrap workers, with no credential
+copy, key environment variable, or second credential source. The host-root proof
+references that file through a symlink. The source file remains operator-managed;
+the bind exposes the whole saved profile to Pi, including any other provider
+entries present there. Run settings, MCP configuration and cwd stay isolated.
+Revocation denies the next attempt; it does not terminate an already running Pi.
+
+The SQLite-backed test exercises granted, ungranted, revoked and sibling cases,
+with read/spawn spies proving denial happens before credential access and launch.
+The real bwrap fixture additionally rejects writes to the bound login.

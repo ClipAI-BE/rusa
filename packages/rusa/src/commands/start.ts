@@ -133,6 +133,7 @@ import {
   ProviderPacer,
   UnifiedAdmissionQueue,
 } from "../actor/provider-pacer.js";
+import { isOpenRouterAdmitted, OPENROUTER_USE_CAPABILITY } from "../actor/provider-use.js";
 import type { QuotaThrottleStatus, QuotaThrottleTick } from "../actor/quota-throttle-status.js";
 import { ShadowResponsiveInterruptionClassifier } from "../actor/responsive-interruption.js";
 import { RootControlService } from "../actor/root-control.js";
@@ -3400,6 +3401,7 @@ async function composeStart(
     grantableCapabilities: new Set([
       ...grantableServers.keys(),
       SECRET_CAPABILITY_BASE,
+      OPENROUTER_USE_CAPABILITY,
       COMPUTER_USE_CAPABILITY,
       OBLIGATION_RESPONSIVE_CAPABILITY,
       OBLIGATIONS_ADMIN_CAPABILITY,
@@ -3821,6 +3823,8 @@ async function composeStart(
           // but its durable construction and tool surface stay ordinary.
           isE2eRoot: id === rootId && Boolean(opts?.e2e),
           isComputerUseAdmitted: computerUseAdmission.isAdmitted,
+          isOpenRouterAdmitted: () =>
+            isOpenRouterAdmitted(capabilityGrants, id, id === rootId && !sandbox),
           // Keep the legacy configured workspace available to the imported
           // record. This is a stored workspace mapping, not a privileged
           // construction or tool path; every actor otherwise receives its

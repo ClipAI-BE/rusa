@@ -16,6 +16,7 @@ import {
   seedConfiguredActorGrants,
 } from "./administrative-capabilities.js";
 import { InMemoryCapabilityGrantStore } from "./capability-grants.js";
+import { OPENROUTER_USE_CAPABILITY } from "./provider-use.js";
 
 /** A fixture rollout: the production experiment registry is empty between rollouts. */
 const FIXTURE_EXPERIMENT = "fixture_rollout";
@@ -64,6 +65,7 @@ function setup() {
     secretsDir,
     grantableCapabilities: new Set([
       ...GRANTABLE,
+      OPENROUTER_USE_CAPABILITY,
       ...ADMINISTRATIVE_CAPABILITIES,
       ...HOST_MAINTENANCE_CAPABILITIES,
     ]),
@@ -298,4 +300,31 @@ describe("the configured actor's seeded access", () => {
       /own subtree/
     );
   });
+});
+
+it("keeps saved OpenRouter spend grants root-only, revocable and absent from spawn defaults", async () => {
+  const { grants, mesh } = setup();
+  seedConfiguredActorGrants(grants, "configured");
+  expect(grants.activeFor("configured")).not.toContain(OPENROUTER_USE_CAPABILITY);
+  expect(grants.activeFor("steward-child")).not.toContain(OPENROUTER_USE_CAPABILITY);
+  grants.grant({
+    actorId: "0b2c3d4e-steward",
+    capability: CAPABILITY_ADMIN_CAPABILITY,
+    grantedBy: "configured",
+    grantedAt: "2026-10-19T00:00:00Z",
+  });
+  expect(() =>
+    mesh.grantCapability("steward-child", OPENROUTER_USE_CAPABILITY, "0b2c3d4e-steward")
+  ).toThrow(/only the configured root/);
+  mesh.grantCapability("steward-child", OPENROUTER_USE_CAPABILITY, "configured");
+  expect(grants.activeFor("steward-child")).toContain(OPENROUTER_USE_CAPABILITY);
+  expect(grants.activeFor("sibling")).not.toContain(OPENROUTER_USE_CAPABILITY);
+  await expect(
+    mesh.revokeCapability("steward-child", OPENROUTER_USE_CAPABILITY, "0b2c3d4e-steward")
+  ).rejects.toThrow(/only the configured root/);
+  await mesh.revokeCapability("steward-child", OPENROUTER_USE_CAPABILITY, "configured");
+  expect(grants.activeFor("steward-child")).not.toContain(OPENROUTER_USE_CAPABILITY);
+  expect(() => mesh.grantCapability("steward-child", "provider-use:other", "configured")).toThrow(
+    /not a grantable/
+  );
 });

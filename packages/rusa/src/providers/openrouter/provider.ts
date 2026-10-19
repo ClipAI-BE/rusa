@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "../../config/types.js";
@@ -32,16 +32,18 @@ export class OpenRouterProvider implements CodingProvider {
     if (opts.session?.id || opts.computerUse) {
       throw new Error("OpenRouter prototype supports fresh runs without computer use only");
     }
+    if (opts.openrouterAdmitted !== true) {
+      throw new Error("OpenRouter launch denied: provider-use:openrouter admission required");
+    }
     const authDir =
       config.authDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-    let credential: { type: "api_key"; key: string };
+    const authPath = join(authDir, "auth.json");
     try {
-      const auth = JSON.parse(await readFile(join(authDir, "auth.json"), "utf8"));
+      const auth = JSON.parse(await readFile(authPath, "utf8"));
       const entry = auth?.openrouter;
       const key =
         entry?.type === "oauth" ? entry.access : entry?.type === "api_key" ? entry.key : undefined;
       if (typeof key !== "string" || !key.trim() || key.startsWith("!")) throw new Error();
-      credential = { type: "api_key", key };
     } catch {
       throw new Error("OpenRouter authentication required: launch pi and run /login openrouter");
     }
@@ -59,9 +61,9 @@ export class OpenRouterProvider implements CodingProvider {
       const work = join(root, "work");
       await mkdir(agent, { mode: 0o700 });
       await mkdir(work, { mode: 0o700 });
-      await writeFile(join(agent, "auth.json"), JSON.stringify({ openrouter: credential }), {
-        mode: 0o600,
-      });
+      // Host-root PoC uses the operator-managed profile directly. Workers receive
+      // a read-only bind below, never a copied credential or secret-file grant.
+      if (!opts.sandbox) await symlink(authPath, join(agent, "auth.json"));
       await writeFile(
         join(agent, "settings.json"),
         JSON.stringify({
@@ -122,7 +124,16 @@ export class OpenRouterProvider implements CodingProvider {
         tempPaths.push(...sandbox.tempPaths);
         // The shared launcher shadows host /tmp. Rebind only this invocation's
         // private state, then override its actor cwd to avoid Pi migrations.
-        sandbox.args.push("--bind", root, root, "--chdir", work);
+        sandbox.args.push(
+          "--bind",
+          root,
+          root,
+          "--ro-bind",
+          authPath,
+          join(agent, "auth.json"),
+          "--chdir",
+          work
+        );
         spawnArgs = buildActorBwrapCommand(sandbox, command, args);
         command = "bwrap";
       }
@@ -130,7 +141,7 @@ export class OpenRouterProvider implements CodingProvider {
         command,
         args: spawnArgs,
         cwd: work,
-        // Pi receives only its projected provider login and actor-bound MCP URLs.
+        // Pi receives the admitted operator-managed login and actor-bound MCP URLs.
         // Empty cwd avoids Pi startup migration of the actor workspace.
         env: {
           HOME: root,

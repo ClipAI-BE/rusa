@@ -15,8 +15,7 @@ if (process.env.PI_CODING_AGENT_DIR) {
   const auth = JSON.parse(
     await readFile(join(process.env.PI_CODING_AGENT_DIR, "auth.json"), "utf8")
   );
-  assert.deepEqual(Object.keys(auth), ["openrouter"]);
-  assert.equal(auth.openrouter.key, "synthetic-not-a-real-key");
+  assert.equal(auth.openrouter.key ?? auth.openrouter.access, "synthetic-not-a-real-key");
   assert.equal(process.env.OPENROUTER_API_KEY, undefined);
   // Provider includes its generated admission extension before model argv.
   const extensionIndex = process.argv.lastIndexOf("-e");
@@ -41,6 +40,9 @@ lines.on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "prompt" && command.message.startsWith("sandbox-probe:")) {
     const probe = JSON.parse(command.message.slice("sandbox-probe:".length));
+    assert.throws(() =>
+      writeFileSync(join(process.env.PI_CODING_AGENT_DIR, "auth.json"), "changed")
+    );
     assert.equal(process.cwd(), join(process.env.HOME, "work"));
     assert.equal(readFileSync(probe.ownFile, "utf8"), "own");
     writeFileSync(probe.ownFile, "updated");

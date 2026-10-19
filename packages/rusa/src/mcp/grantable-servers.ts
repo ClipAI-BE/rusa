@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { generateHandle } from "../actor/handle-generator.js";
+import { OPENROUTER_USE_CAPABILITY } from "../actor/provider-use.js";
 import type { CalendarClientProvider } from "../calendar/calendar-client.js";
 import type { ChatClient } from "../chat/types.js";
 import type { DriveClient } from "../drive/drive-client.js";
@@ -317,10 +318,11 @@ export async function handleCapabilityRevoked(
       capability.startsWith("chat-read:") ||
       capability === "chat-read" ||
       capability.startsWith("secret:") ||
-      capability === "secret"
+      capability === "secret" ||
+      capability === OPENROUTER_USE_CAPABILITY
     ) {
-      // Chat reads and secrets are not MCP servers; secret revocation takes effect
-      // on the actor's next sandboxed spawn via the secrets tmpfs mask.
+      // These grants mount no MCP endpoint. Provider spend is checked at the
+      // next attempt; secret mounts refresh at the next sandboxed spawn.
       return;
     }
     let baseCapability = capability;
